@@ -481,6 +481,9 @@ func (it *tikvIterator) Seek(key []byte) {
 	if it.iter != nil {
 		it.iter.Close()
 	}
+	if len(key) == 0 {
+		key = it.prefix
+	}
 	var err error
 	if it.isReverse {
 		startKey := make([]byte, len(key), len(key)+1)

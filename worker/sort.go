@@ -275,6 +275,7 @@ func sortWithIndex(ctx context.Context, ts *pb.SortMessage) *sortresult {
 	defer itr.Close()
 
 	r := new(pb.SortResult)
+	var lastToken string
 BUCKETS:
 	// Outermost loop is over index buckets.
 	for itr.Seek(seekKey); itr.Valid(); itr.Next() {
@@ -292,6 +293,10 @@ BUCKETS:
 
 			x.AssertTrue(k.IsIndex())
 			token := k.Term
+			if token == lastToken {
+				continue
+			}
+			lastToken = token
 			// Intersect every UID list with the index bucket, and update their
 			// results (in out).
 			err = intersectBucket(ctx, ts, token, out)

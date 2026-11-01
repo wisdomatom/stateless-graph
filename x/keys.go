@@ -529,6 +529,10 @@ func SplitKey(baseKey []byte, startUid uint64) ([]byte, error) {
 func Parse(key []byte) (ParsedKey, error) {
 	var p ParsedKey
 
+	if baseKey, _, _, ok := SplitPostingKey(key); ok {
+		key = baseKey
+	}
+
 	if len(key) < 9 {
 		return p, errors.New("Key length less than 9")
 	}
