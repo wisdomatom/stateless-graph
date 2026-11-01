@@ -887,6 +887,14 @@ func applyMutations(ctx context.Context, m *pb.Mutations) error {
 	if m.StartTs == 0 {
 		return errors.Errorf("StartTs cannot be zero")
 	}
+	for _, edge := range m.Edges {
+		if isDeletePredicateEdge(edge) {
+			if err := detectPendingTxns(edge.Attr); err != nil {
+				return err
+			}
+			return posting.DeletePredicate(ctx, edge.Attr, m.StartTs)
+		}
+	}
 	txn := posting.Oracle().RegisterStartTs(m.StartTs)
 	for _, edge := range m.Edges {
 		if err := runMutation(ctx, edge, txn); err != nil {
