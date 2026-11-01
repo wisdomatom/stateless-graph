@@ -1,0 +1,57 @@
+/build
+/installs
+/coverage.out
+/dgraph-bulk-loader
+/osx-docker-gopath
+
+# goland project folder
+.idea
+dgraph.iml
+
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, build with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+
+#darwin
+.DS_Store
+
+vendor
+.minio.sys
+
+# Local test files
+contrib/local-test/dql-data.json
+contrib/local-test/dql-data.rdf
+contrib/local-test/gql-data.json
+contrib/local-test/query.dql
+contrib/local-test/query.gql
+contrib/local-test/schema.dql
+contrib/local-test/schema.graphql
+contrib/local-test/variables.json
+
+
+# Dgraph
+systest/bulk_live/bulk/**/*.txt
+systest/bulk_live/bulk/**/*.rdf
+
+systest/bulk_live/live/**/*.rdf
+systest/bulk_live/live/**/*.txt
+x/log_test/*.enc
+*.buf
+.osgrep
+.worktrees/
+AGENTS.md
+CLAUDE.md
+embeding_data
+*.profbin/
+
+bin/
+*.prof

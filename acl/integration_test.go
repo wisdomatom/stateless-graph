@@ -1,0 +1,34 @@
+//go:build integration
+
+/*
+ * SPDX-FileCopyrightText: © 2017-2025 Istari Digital, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+package acl
+
+import (
+	"testing"
+
+	"github.com/stretchr/testify/suite"
+
+	"github.com/wisdomatom/stateless-graph/dgraphapi"
+	"github.com/wisdomatom/stateless-graph/dgraphtest"
+)
+
+type AclTestSuite struct {
+	suite.Suite
+	dc dgraphapi.Cluster
+}
+
+func (suite *AclTestSuite) SetupTest() {
+	suite.dc = dgraphtest.NewComposeCluster()
+}
+
+func (suite *AclTestSuite) Upgrade() {
+	// not implemented for integration tests
+}
+
+func TestACLSuite(t *testing.T) {
+	suite.Run(t, new(AclTestSuite))
+}
