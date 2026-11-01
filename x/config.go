@@ -142,6 +142,8 @@ type WorkerOptions struct {
 	TiKVAddrs []string
 	// Stateless disables cross-request global posting caches to support multi-alpha deployments on shared KV.
 	Stateless bool
+	// Embedded indicates the engine is running in in-process embedded mode.
+	Embedded bool
 }
 
 // WorkerConfig stores the global instance of the worker package's options.

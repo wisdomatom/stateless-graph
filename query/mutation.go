@@ -117,7 +117,7 @@ func ExpandEdges(ctx context.Context, m *pb.Mutations) ([]*pb.DirectedEdge, erro
 }
 
 func verifyUid(ctx context.Context, uid uint64) error {
-	if len(x.WorkerConfig.TiKVAddrs) > 0 || x.WorkerConfig.Stateless {
+	if len(x.WorkerConfig.TiKVAddrs) > 0 || x.WorkerConfig.Stateless || x.WorkerConfig.Embedded {
 		return nil
 	}
 	if uid <= worker.MaxLeaseId() {

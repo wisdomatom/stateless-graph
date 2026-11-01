@@ -63,6 +63,9 @@ func applyInitialTypes(ns, ts uint64) {
 func SetMaxUID(uid uint64) {
 	groups().Lock()
 	defer groups().Unlock()
+	if groups().state == nil {
+		groups().state = &pb.MembershipState{}
+	}
 	groups().state.MaxUID = uid
 }
 

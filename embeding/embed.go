@@ -7,6 +7,7 @@ package embeding
 
 import (
 	"context"
+	"math"
 	"net"
 	"os"
 	"path"
@@ -90,6 +91,7 @@ func NewDgraphEmbed(conf DgraphServer) (*EmbedDgraph, error) {
 	// For embedded server, disable hard sync to fully utilize NVMe speed for benchmarks.
 	x.WorkerConfig.HardSync = false
 	x.WorkerConfig.TiKVAddrs = conf.TiKVAddrs
+	x.WorkerConfig.Embedded = true
 
 	ed := &EmbedDgraph{
 		lock:   &sync.Mutex{},
@@ -196,6 +198,7 @@ func (r *EmbedDgraph) dAlpha(conf DgraphServer, lis *bufconn.Listener) {
 	// worker.State.InitStorage()
 	worker.InitServerState()
 	worker.InitForLite(worker.State.Pstore)
+	worker.SetMaxUID(math.MaxUint64)
 	worker.InitTasks()
 	worker.Init(worker.State.Pstore)
 
