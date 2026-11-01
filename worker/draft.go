@@ -2025,6 +2025,9 @@ func (n *node) InitAndStartNode() {
 }
 
 func (n *node) AmLeader() bool {
+	if x.WorkerConfig.Embedded {
+		return true
+	}
 	if n.Raft() == nil {
 		return false
 	}

@@ -452,7 +452,10 @@ func (g *groupi) Leader(gid uint32) *conn.Pool {
 func (g *groupi) KnownGroups() (gids []uint32) {
 	g.RLock()
 	defer g.RUnlock()
-	if g.state == nil {
+	if g.state == nil || len(g.state.Groups) == 0 {
+		if x.WorkerConfig.Embedded {
+			return []uint32{1}
+		}
 		return
 	}
 	for gid := range g.state.Groups {

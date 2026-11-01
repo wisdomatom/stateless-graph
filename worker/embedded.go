@@ -18,7 +18,19 @@ import (
 
 func InitForLite(ps x.KVDB) {
 	pstore = ps
-	groups().state = &pb.MembershipState{}
+	groups().state = &pb.MembershipState{
+		Groups: map[uint32]*pb.Group{
+			1: {
+				Members: map[uint64]*pb.Member{
+					1: {
+						Id:      1,
+						GroupId: 1,
+						Leader:  true,
+					},
+				},
+			},
+		},
+	}
 	groups().Node = &node{Node: &conn.Node{Id: 1}}
 	groups().gid = 1
 }
