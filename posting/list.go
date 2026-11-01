@@ -329,8 +329,7 @@ func (mm *MutableLayer) insertCommittedPostings(pl *pb.PostingList) {
 		if mpost.CommitTs >= mm.deleteAllMarker {
 			mm.length += getLengthDelta(mpost.Op)
 		}
-		// We insert old postings in reverse order. So we only need to read the first update to an UID.
-		if _, ok := mm.committedUids[mpost.Uid]; !ok {
+		if existing, ok := mm.committedUids[mpost.Uid]; !ok || mpost.CommitTs >= existing.CommitTs {
 			mm.committedUids[mpost.Uid] = mpost
 		}
 	}
