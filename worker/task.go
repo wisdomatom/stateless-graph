@@ -457,7 +457,7 @@ func (qs *queryState) handleValuePostings(ctx context.Context, args funcArgs) er
 		outputs[start/width] = out
 
 		var batchPostings map[string]*pb.PostingList
-		if !getMultiplePosting && len(x.WorkerConfig.TiKVAddrs) == 0 {
+		if !x.WorkerConfig.UseFlatStorage && !getMultiplePosting && len(x.WorkerConfig.TiKVAddrs) == 0 {
 			keys := make([][]byte, 0, end-start)
 			for i := start; i < end; i++ {
 				keys = append(keys, x.DataKey(q.Attr, q.UidList.Uids[i]))
@@ -475,14 +475,33 @@ func (qs *queryState) handleValuePostings(ctx context.Context, args funcArgs) er
 				return ctx.Err()
 			default:
 			}
-			key := x.DataKey(q.Attr, q.UidList.Uids[i])
-
-			// Get or create the posting list for an entity, attribute combination.
 
 			var vals []types.Val
 			fcs := &pb.FacetsList{FacetsList: make([]*pb.Facets, 0)} // TODO Figure out how it is stored
 
-			if !getMultiplePosting && batchPostings != nil {
+			if x.WorkerConfig.UseFlatStorage {
+				readTxn := pstore.NewTransactionAt(q.ReadTs, false)
+				ns, rawAttr := parseNamespaceSafe(q.Attr)
+				attrID := flat.PredicateToAttrID(rawAttr)
+				shardID := flat.CalculateShardID(q.UidList.Uids[i], 0)
+				valType, valBytes, err := GlobalFlatEngine.GetData(readTxn, shardID, ns, attrID, q.UidList.Uids[i])
+				readTxn.Discard()
+				if err != nil || len(valBytes) == 0 {
+					out.UidMatrix = append(out.UidMatrix, &pb.List{})
+					out.FacetMatrix = append(out.FacetMatrix, &pb.FacetsList{})
+					out.ValueMatrix = append(out.ValueMatrix,
+						&pb.ValueList{Values: []*pb.TaskValue{}})
+					if q.ExpandAll {
+						out.LangMatrix = append(out.LangMatrix, &pb.LangList{})
+					}
+					continue
+				}
+				vals = []types.Val{{
+					Tid:   types.TypeID(valType),
+					Value: valBytes,
+				}}
+			} else if !getMultiplePosting && batchPostings != nil {
+				key := x.DataKey(q.Attr, q.UidList.Uids[i])
 				pl := batchPostings[string(key)]
 				if pl == nil || len(pl.Postings) == 0 {
 					out.UidMatrix = append(out.UidMatrix, &pb.List{})
@@ -499,6 +518,7 @@ func (qs *queryState) handleValuePostings(ctx context.Context, args funcArgs) er
 					}
 				}
 			} else {
+				key := x.DataKey(q.Attr, q.UidList.Uids[i])
 				pl, err := qs.cache.Get(key)
 				if err != nil {
 					return err

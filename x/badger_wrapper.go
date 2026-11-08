@@ -134,7 +134,9 @@ func (s *badgerStreamWriter) Cancel() {
 
 type badgerTxn struct {
 	txn        *badger.Txn
+	mu         sync.Mutex
 	lockedKeys []string
+	lockedSet  map[string]struct{}
 }
 
 var memLockMgr = newMemoryLockManager()
@@ -251,19 +253,25 @@ func (t *badgerTxn) Delete(key []byte) error {
 
 func (t *badgerTxn) CommitAt(commitTs uint64, callback func(error)) error {
 	defer func() {
+		t.mu.Lock()
+		defer t.mu.Unlock()
 		if len(t.lockedKeys) > 0 {
 			memLockMgr.Unlock(t.lockedKeys...)
 			t.lockedKeys = nil
+			t.lockedSet = nil
 		}
 	}()
 	return t.txn.CommitAt(commitTs, callback)
 }
 
 func (t *badgerTxn) Discard() {
+	t.mu.Lock()
 	if len(t.lockedKeys) > 0 {
 		memLockMgr.Unlock(t.lockedKeys...)
 		t.lockedKeys = nil
+		t.lockedSet = nil
 	}
+	t.mu.Unlock()
 	t.txn.Discard()
 }
 
@@ -278,11 +286,33 @@ func (t *badgerTxn) NewIterator(opt KVIterOpts) KVIterator {
 }
 
 func (t *badgerTxn) LockKeys(ctx context.Context, keys ...[]byte) error {
-	acquired, err := memLockMgr.Lock(ctx, keys...)
+	t.mu.Lock()
+	if t.lockedSet == nil {
+		t.lockedSet = make(map[string]struct{})
+	}
+	var toLock [][]byte
+	for _, k := range keys {
+		sk := string(k)
+		if _, exists := t.lockedSet[sk]; !exists {
+			toLock = append(toLock, k)
+		}
+	}
+	t.mu.Unlock()
+
+	if len(toLock) == 0 {
+		return nil
+	}
+
+	acquired, err := memLockMgr.Lock(ctx, toLock...)
 	if err != nil {
 		return err
 	}
-	t.lockedKeys = append(t.lockedKeys, acquired...)
+	t.mu.Lock()
+	for _, k := range acquired {
+		t.lockedSet[k] = struct{}{}
+		t.lockedKeys = append(t.lockedKeys, k)
+	}
+	t.mu.Unlock()
 	return nil
 }
 

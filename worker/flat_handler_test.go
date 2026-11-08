@@ -39,6 +39,7 @@ func TestFlatMutationAndScan(t *testing.T) {
 		Predicate: "friend",
 		ValueType: pb.Posting_UID,
 		Directive: pb.SchemaUpdate_REVERSE, // 开启反向边
+		List:      true,
 	})
 	schema.State().Set("name", &pb.SchemaUpdate{
 		Predicate: "name",

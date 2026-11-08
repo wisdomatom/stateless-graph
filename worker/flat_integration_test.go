@@ -41,6 +41,7 @@ func TestFlatStorageE2EWorkflow(t *testing.T) {
 		Predicate: "friend",
 		ValueType: pb.Posting_UID,
 		Directive: pb.SchemaUpdate_REVERSE,
+		List:      true,
 	})
 	schema.State().Set("name", &pb.SchemaUpdate{
 		Predicate: "name",
@@ -67,8 +68,16 @@ func TestFlatStorageE2EWorkflow(t *testing.T) {
 		ValueId: userC,
 		Op:      pb.DirectedEdge_SET,
 	}
+	edgeName := &pb.DirectedEdge{
+		Entity:    userA,
+		Attr:      "name",
+		Value:     []byte("Alice"),
+		ValueType: pb.Posting_STRING,
+		Op:        pb.DirectedEdge_SET,
+	}
 	require.NoError(t, runMutation(ctx, edge1, txn))
 	require.NoError(t, runMutation(ctx, edge2, txn))
+	require.NoError(t, runMutation(ctx, edgeName, txn))
 
 	// 3. 执行 CommitOverNetwork (2PC 提交到磁盘)
 	tctx := &api.TxnContext{StartTs: startTs}
@@ -112,4 +121,49 @@ func TestFlatStorageE2EWorkflow(t *testing.T) {
 
 	require.Len(t, outRev.UidMatrix, 1)
 	require.Equal(t, []uint64{userA}, outRev.UidMatrix[0].Uids)
+
+	// 6. 标量属性查询遍历: 查询 userA 的 name
+	qName := &pb.Query{
+		Attr:    "name",
+		ReadTs:  commitTs,
+		UidList: &pb.List{Uids: []uint64{userA}},
+	}
+	srcFnName, err := parseSrcFn(ctx, qName)
+	require.NoError(t, err)
+
+	outName := &pb.Result{}
+	argsName := funcArgs{q: qName, gid: 1, srcFn: srcFnName, out: outName}
+	err = qs.handleValuePostings(ctx, argsName)
+	require.NoError(t, err)
+
+	require.Len(t, outName.ValueMatrix, 1)
+	require.Len(t, outName.ValueMatrix[0].Values, 1)
+	require.Equal(t, []byte("Alice"), outName.ValueMatrix[0].Values[0].Val)
+
+	// 7. 删除标量属性并验证
+	delName := &pb.DirectedEdge{
+		Entity: userA,
+		Attr:   "name",
+		Op:     pb.DirectedEdge_DEL,
+	}
+	startTs2 := commitTs + 1
+	txn2 := posting.Oracle().RegisterStartTs(startTs2)
+	require.NoError(t, runMutation(ctx, delName, txn2))
+	tctx2 := &api.TxnContext{StartTs: startTs2}
+	commitTs2, err := CommitOverNetwork(ctx, tctx2)
+	require.NoError(t, err)
+
+	qName2 := &pb.Query{
+		Attr:    "name",
+		ReadTs:  commitTs2,
+		UidList: &pb.List{Uids: []uint64{userA}},
+	}
+	srcFnName2, err := parseSrcFn(ctx, qName2)
+	require.NoError(t, err)
+	outName2 := &pb.Result{}
+	argsName2 := funcArgs{q: qName2, gid: 1, srcFn: srcFnName2, out: outName2}
+	err = qs.handleValuePostings(ctx, argsName2)
+	require.NoError(t, err)
+	require.Len(t, outName2.ValueMatrix, 1)
+	require.Len(t, outName2.ValueMatrix[0].Values, 0)
 }
