@@ -30,6 +30,7 @@ import (
 	bpb "github.com/dgraph-io/badger/v4/pb"
 	"github.com/wisdomatom/stateless-graph/protos/pb"
 	"github.com/wisdomatom/stateless-graph/schema"
+	"github.com/wisdomatom/stateless-graph/storage/flat"
 	"github.com/wisdomatom/stateless-graph/tok"
 	"github.com/wisdomatom/stateless-graph/tok/hnsw"
 	"github.com/wisdomatom/stateless-graph/types"
@@ -1879,6 +1880,9 @@ func DeletePredicate(ctx context.Context, attr string, ts uint64) error {
 	glog.Infof("Dropping predicate: [%s]", attr)
 	ResetCache()
 	preds := schema.State().PredicatesToDelete(attr)
+	if len(preds) == 0 {
+		preds = []string{attr}
+	}
 	for _, pred := range preds {
 		prefix := x.PredicatePrefix(pred)
 		if err := schema.State().Delete(pred, ts); err != nil {
@@ -1886,6 +1890,14 @@ func DeletePredicate(ctx context.Context, attr string, ts uint64) error {
 		}
 		if err := pstore.DropPrefix(prefix); err != nil {
 			return err
+		}
+		if x.WorkerConfig.UseFlatStorage {
+			ns, rawAttr := x.ParseNamespaceSafe(pred)
+			attrID := flat.PredicateToAttrID(rawAttr)
+			flatPrefixes := flat.PredicatePrefixes(0, ns, attrID)
+			if err := pstore.DropPrefix(flatPrefixes...); err != nil {
+				return err
+			}
 		}
 	}
 

@@ -106,12 +106,31 @@ func ParseNamespaceBytes(attr string) ([]byte, string) {
 
 // ParseAttr returns the attr from the given value.
 func ParseAttr(attr string) string {
+	if !strings.Contains(attr, NsSeparator) {
+		return attr
+	}
 	return strings.SplitN(attr, NsSeparator, 2)[1]
 }
 
 // ParseNamespace returns the namespace from the given value.
 func ParseNamespace(attr string) uint64 {
+	if !strings.Contains(attr, NsSeparator) {
+		return 0
+	}
 	return strToUint(strings.SplitN(attr, NsSeparator, 2)[0])
+}
+
+// ParseNamespaceSafe safely extracts namespace and raw attribute name even if no namespace prefix exists.
+func ParseNamespaceSafe(attr string) (uint32, string) {
+	if !strings.Contains(attr, NsSeparator) {
+		return 0, attr
+	}
+	parts := strings.SplitN(attr, NsSeparator, 2)
+	ns, err := strconv.ParseUint(parts[0], 16, 64)
+	if err != nil {
+		return 0, attr
+	}
+	return uint32(ns), parts[1]
 }
 
 func ParseAttrList(attrs []string) []string {

@@ -25,9 +25,10 @@ const (
 
 const (
 	// 固定长度常量
-	HeaderLen  = 7  // ShardID(2B) + Namespace(4B) + KeyType(1B)
-	DataKeyLen = 19 // Header(7B) + AttrID(4B) + SubjectUID(8B)
-	EdgeKeyLen = 27 // Header(7B) + AttrID(4B) + SubjectUID(8B) + ObjectUID(8B)
+	HeaderLen      = 7  // ShardID(2B) + Namespace(4B) + KeyType(1B)
+	DataKeyLen     = 19 // Header(7B) + AttrID(4B) + SubjectUID(8B)
+	ListDataKeyLen = 27 // Header(7B) + AttrID(4B) + SubjectUID(8B) + ItemHash(8B)
+	EdgeKeyLen     = 27 // Header(7B) + AttrID(4B) + SubjectUID(8B) + ObjectUID(8B)
 )
 
 var (
@@ -77,6 +78,30 @@ func EncodeDataKey(shardID uint16, ns uint32, attrID uint32, uid uint64) []byte 
 	binary.BigEndian.PutUint32(buf[7:11], attrID)
 	binary.BigEndian.PutUint64(buf[11:19], uid)
 	return buf
+}
+
+// EncodeListDataKey 编码标量列表属性键 (27 字节)
+// 格式: ShardID(2B) || Namespace(4B) || 0x01 || AttrID(4B) || SubjectUID(8B) || ItemHash(8B)
+func EncodeListDataKey(shardID uint16, ns uint32, attrID uint32, uid uint64, itemHash uint64) []byte {
+	buf := make([]byte, ListDataKeyLen)
+	writeHeader(buf, shardID, ns, KeyTypeData)
+	binary.BigEndian.PutUint32(buf[7:11], attrID)
+	binary.BigEndian.PutUint64(buf[11:19], uid)
+	binary.BigEndian.PutUint64(buf[19:27], itemHash)
+	return buf
+}
+
+// PredicatePrefixes 生成指定 Predicate 在 Flat 存储下的所有前缀 (Data, Edge, Reverse, Index)
+func PredicatePrefixes(shardID uint16, ns uint32, attrID uint32) [][]byte {
+	keyTypes := []byte{KeyTypeData, KeyTypeEdge, KeyTypeReverse, KeyTypeIndex}
+	prefixes := make([][]byte, len(keyTypes))
+	for i, kt := range keyTypes {
+		buf := make([]byte, 11)
+		writeHeader(buf, shardID, ns, kt)
+		binary.BigEndian.PutUint32(buf[7:11], attrID)
+		prefixes[i] = buf
+	}
+	return prefixes
 }
 
 // EncodeEdgeKey 编码正向关系边键 (27 字节)

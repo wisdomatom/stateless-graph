@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"encoding/binary"
 	"testing"
 
 	"github.com/dgraph-io/badger/v4"
@@ -11,6 +12,8 @@ import (
 	"github.com/wisdomatom/stateless-graph/posting"
 	"github.com/wisdomatom/stateless-graph/protos/pb"
 	"github.com/wisdomatom/stateless-graph/schema"
+	"github.com/wisdomatom/stateless-graph/storage/flat"
+	"github.com/wisdomatom/stateless-graph/tok"
 	"github.com/wisdomatom/stateless-graph/x"
 )
 
@@ -121,4 +124,94 @@ func TestFlatMutationAndScan(t *testing.T) {
 	revResAfterDel, err := FlatScanReverseEdges(ctx, txn, "friend", user2, opts)
 	require.NoError(t, err)
 	require.Empty(t, revResAfterDel.Uids)
+}
+
+func TestFlatScalarListAndIndexedDelete(t *testing.T) {
+	kv, cleanup := newTestFlatKV(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	schema.State().Set("tags", &pb.SchemaUpdate{
+		Predicate: "tags",
+		ValueType: pb.Posting_STRING,
+		List:      true,
+	})
+	schema.State().Set("age", &pb.SchemaUpdate{
+		Predicate: "age",
+		ValueType: pb.Posting_INT,
+		Directive: pb.SchemaUpdate_INDEX,
+		Tokenizer: []string{"int"},
+	})
+
+	txn := kv.NewTransactionAt(10, true)
+	defer txn.Discard()
+
+	u := uint64(500)
+	// 1. 添加 tag "tagA" 和 "tagB"
+	require.NoError(t, ApplyFlatMutation(ctx, &pb.DirectedEdge{
+		Entity:    u,
+		Attr:      "tags",
+		Value:     []byte("tagA"),
+		ValueType: pb.Posting_STRING,
+		Op:        pb.DirectedEdge_SET,
+	}, txn))
+	require.NoError(t, ApplyFlatMutation(ctx, &pb.DirectedEdge{
+		Entity:    u,
+		Attr:      "tags",
+		Value:     []byte("tagB"),
+		ValueType: pb.Posting_STRING,
+		Op:        pb.DirectedEdge_SET,
+	}, txn))
+
+	// 2. 扫描 tags，应该有 2 个
+	valTypes, valBytes, err := GlobalFlatEngine.ScanData(txn, 0, 0, flat.PredicateToAttrID("tags"), u)
+	require.NoError(t, err)
+	require.Len(t, valTypes, 2)
+	require.Len(t, valBytes, 2)
+
+	// 3. 删除单个 tag "tagA"
+	require.NoError(t, ApplyFlatMutation(ctx, &pb.DirectedEdge{
+		Entity:    u,
+		Attr:      "tags",
+		Value:     []byte("tagA"),
+		ValueType: pb.Posting_STRING,
+		Op:        pb.DirectedEdge_DEL,
+	}, txn))
+	valTypes, valBytes, err = GlobalFlatEngine.ScanData(txn, 0, 0, flat.PredicateToAttrID("tags"), u)
+	require.NoError(t, err)
+	require.Len(t, valBytes, 1)
+	require.Equal(t, []byte("tagB"), valBytes[0])
+
+	// 4. 测试带索引的整型标量写入与删除 (验证不触发 Tokenizer 类型转换 panic)
+	ageBytes := make([]byte, 8)
+	binary.LittleEndian.PutUint64(ageBytes, 30)
+	require.NoError(t, ApplyFlatMutation(ctx, &pb.DirectedEdge{
+		Entity:    u,
+		Attr:      "age",
+		Value:     ageBytes,
+		ValueType: pb.Posting_INT,
+		Op:        pb.DirectedEdge_SET,
+	}, txn))
+
+	tokenizer, ok := tok.GetTokenizer("int")
+	require.True(t, ok)
+	toks, err := tok.BuildTokens(int64(30), tokenizer)
+	require.NoError(t, err)
+	require.NotEmpty(t, toks)
+
+	// 验证索引存在
+	idxUIDs, err := GlobalFlatEngine.ScanIndex(txn, 0, 0, flat.PredicateToAttrID("age"), []byte(toks[0]))
+	require.NoError(t, err)
+	require.Contains(t, idxUIDs, u)
+
+	// 删除 age，不应 panic，且索引被清空
+	require.NoError(t, ApplyFlatMutation(ctx, &pb.DirectedEdge{
+		Entity:    u,
+		Attr:      "age",
+		Op:        pb.DirectedEdge_DEL,
+	}, txn))
+
+	idxUIDs, err = GlobalFlatEngine.ScanIndex(txn, 0, 0, flat.PredicateToAttrID("age"), []byte(toks[0]))
+	require.NoError(t, err)
+	require.Empty(t, idxUIDs)
 }

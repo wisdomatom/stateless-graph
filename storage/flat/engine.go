@@ -85,6 +85,10 @@ type Engine interface {
 	SetData(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, uid uint64, valType byte, data []byte) error
 	GetData(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, uid uint64) (byte, []byte, error)
 	DeleteData(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, uid uint64) error
+	AddListData(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, uid uint64, itemHash uint64, valType byte, data []byte) error
+	DeleteListData(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, uid uint64, itemHash uint64) error
+	DeleteAllData(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, uid uint64) error
+	ScanData(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, uid uint64) ([]byte, [][]byte, error)
 
 	// 关系出边操作
 	AddEdge(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, fromUID, toUID uint64, facets []byte) error
@@ -136,6 +140,61 @@ func (e *DefaultEngine) GetData(txn x.KVTxn, shardID uint16, ns uint32, attrID u
 func (e *DefaultEngine) DeleteData(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, uid uint64) error {
 	k := EncodeDataKey(shardID, ns, attrID, uid)
 	return txn.Delete(k)
+}
+
+func (e *DefaultEngine) AddListData(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, uid uint64, itemHash uint64, valType byte, data []byte) error {
+	k := EncodeListDataKey(shardID, ns, attrID, uid, itemHash)
+	val := make([]byte, 1+len(data))
+	val[0] = valType
+	copy(val[1:], data)
+	return txn.Set(k, val)
+}
+
+func (e *DefaultEngine) DeleteListData(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, uid uint64, itemHash uint64) error {
+	k := EncodeListDataKey(shardID, ns, attrID, uid, itemHash)
+	return txn.Delete(k)
+}
+
+func (e *DefaultEngine) DeleteAllData(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, uid uint64) error {
+	prefix := EncodeDataKey(shardID, ns, attrID, uid)
+	it := txn.NewIterator(x.KVIterOpts{Prefix: prefix})
+	defer it.Close()
+	var keysToDelete [][]byte
+	for it.Seek(prefix); it.Valid(); it.Next() {
+		key := it.Item().Key()
+		if !bytes.HasPrefix(key, prefix) {
+			break
+		}
+		keysToDelete = append(keysToDelete, it.Item().KeyCopy(nil))
+	}
+	for _, k := range keysToDelete {
+		if err := txn.Delete(k); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (e *DefaultEngine) ScanData(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, uid uint64) ([]byte, [][]byte, error) {
+	prefix := EncodeDataKey(shardID, ns, attrID, uid)
+	it := txn.NewIterator(x.KVIterOpts{Prefix: prefix, PrefetchValues: true, PrefetchSize: 10})
+	defer it.Close()
+	var valTypes []byte
+	var valBytesList [][]byte
+	for it.Seek(prefix); it.Valid(); it.Next() {
+		item := it.Item()
+		key := item.Key()
+		if !bytes.HasPrefix(key, prefix) {
+			break
+		}
+		val, err := item.ValueCopy(nil)
+		if err != nil || len(val) == 0 {
+			continue
+		}
+		valTypes = append(valTypes, val[0])
+		valBytesList = append(valBytesList, val[1:])
+	}
+	return valTypes, valBytesList, nil
 }
 
 func (e *DefaultEngine) AddEdge(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, fromUID, toUID uint64, facets []byte) error {

@@ -484,9 +484,9 @@ func (qs *queryState) handleValuePostings(ctx context.Context, args funcArgs) er
 				ns, rawAttr := parseNamespaceSafe(q.Attr)
 				attrID := flat.PredicateToAttrID(rawAttr)
 				shardID := flat.CalculateShardID(q.UidList.Uids[i], 0)
-				valType, valBytes, err := GlobalFlatEngine.GetData(readTxn, shardID, ns, attrID, q.UidList.Uids[i])
+				valTypes, valBytesList, err := GlobalFlatEngine.ScanData(readTxn, shardID, ns, attrID, q.UidList.Uids[i])
 				readTxn.Discard()
-				if err != nil || len(valBytes) == 0 {
+				if err != nil || len(valBytesList) == 0 {
 					out.UidMatrix = append(out.UidMatrix, &pb.List{})
 					out.FacetMatrix = append(out.FacetMatrix, &pb.FacetsList{})
 					out.ValueMatrix = append(out.ValueMatrix,
@@ -496,10 +496,13 @@ func (qs *queryState) handleValuePostings(ctx context.Context, args funcArgs) er
 					}
 					continue
 				}
-				vals = []types.Val{{
-					Tid:   types.TypeID(valType),
-					Value: valBytes,
-				}}
+				vals = make([]types.Val, len(valBytesList))
+				for idx := range valBytesList {
+					vals[idx] = types.Val{
+						Tid:   types.TypeID(valTypes[idx]),
+						Value: valBytesList[idx],
+					}
+				}
 			} else if !getMultiplePosting && batchPostings != nil {
 				key := x.DataKey(q.Attr, q.UidList.Uids[i])
 				pl := batchPostings[string(key)]
