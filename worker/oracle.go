@@ -283,10 +283,16 @@ func (o *oracle) IterateTxns(ok func(key []byte) bool) []uint64 {
 }
 
 func EdgeTypeID(edge *pb.DirectedEdge) types.TypeID {
+	if edge.ValueId != 0 {
+		return types.UidID
+	}
 	return types.TypeID(edge.ValueType)
 }
 
 func TypeID(edge *pb.DirectedEdge) types.TypeID {
+	if edge.ValueId != 0 {
+		return types.UidID
+	}
 	return types.TypeID(edge.ValueType)
 }
 

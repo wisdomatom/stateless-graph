@@ -59,21 +59,19 @@ func runMutation(ctx context.Context, edge *pb.DirectedEdge, txn *Txn) error {
 	// We shouldn't check whether this Alpha serves this predicate or not. Membership information
 	// isn't consistent across the entire cluster. We should just apply whatever is given to us.
 	su, ok := schema.State().Get(ctx, edge.Attr)
-	if edge.Op != pb.DirectedEdge_DEL {
-		if !ok {
-			if !x.WorkerConfig.StrictMutations {
-				vType := TypeID(edge)
-				if vType == 0 {
-					vType = types.DefaultID
-				}
-				su = pb.SchemaUpdate{
-					Predicate: edge.Attr,
-					ValueType: pb.Posting_ValType(vType),
-				}
-				schema.State().Set(edge.Attr, &su)
-			} else {
-				return errors.Errorf("runMutation: Unable to find schema for %s", edge.Attr)
+	if !ok {
+		if !x.WorkerConfig.StrictMutations {
+			vType := TypeID(edge)
+			if vType == 0 {
+				vType = types.DefaultID
 			}
+			su = pb.SchemaUpdate{
+				Predicate: edge.Attr,
+				ValueType: pb.Posting_ValType(vType),
+			}
+			schema.State().Set(edge.Attr, &su)
+		} else {
+			return errors.Errorf("runMutation: Unable to find schema for %s", edge.Attr)
 		}
 	}
 

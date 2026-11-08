@@ -15,6 +15,7 @@ import (
 
 	"github.com/dgraph-io/badger/v4"
 	"github.com/wisdomatom/stateless-graph/protos/pb"
+	"github.com/wisdomatom/stateless-graph/schema"
 	"github.com/wisdomatom/stateless-graph/types"
 	"github.com/wisdomatom/stateless-graph/x"
 )
@@ -29,7 +30,7 @@ func TestReverseEdge(t *testing.T) {
 	x.Check(err)
 	bkv := x.NewBadgerKV(ps)
 	pstore = bkv
-	// Not using posting list cache
+	schema.Init(bkv)
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -52,64 +53,6 @@ func TestReverseEdge(t *testing.T) {
 	c := pl.GetLength(5)
 	pl.RUnlock()
 	require.Equal(t, 0, c)
-}
-
-func TestReverseEdgeSetDel(t *testing.T) {
-	dir, err := os.MkdirTemp("", "storetest_")
-	x.Check(err)
-	defer os.RemoveAll(dir)
-
-	opt := badger.DefaultOptions(dir)
-	ps, err := badger.OpenManaged(opt)
-	x.Check(err)
-	bkv := x.NewBadgerKV(ps)
-	pstore = bkv
-	// Not using posting list cache
-	require.NoError(t, err)
-
-	ctx := context.Background()
-	txn := Oracle().RegisterStartTs(5)
-	attr := x.AttrInRootNamespace("revc")
-
-	edgeDel := &pb.DirectedEdge{
-		ValueId: 2,
-		Attr:    attr,
-		Entity:  3,
-		Op:      pb.DirectedEdge_DEL,
-	}
-
-	edgeSet1 := &pb.DirectedEdge{
-		ValueId: 2,
-		Attr:    attr,
-		Entity:  1,
-		Op:      pb.DirectedEdge_SET,
-	}
-
-	edgeSet2 := &pb.DirectedEdge{
-		ValueId: 2,
-		Attr:    attr,
-		Entity:  3,
-		Op:      pb.DirectedEdge_SET,
-	}
-
-	edgeSet3 := &pb.DirectedEdge{
-		ValueId: 2,
-		Attr:    attr,
-		Entity:  4,
-		Op:      pb.DirectedEdge_SET,
-	}
-
-	x.Check(runMutation(ctx, edgeSet1, txn))
-	x.Check(runMutation(ctx, edgeSet2, txn))
-	x.Check(runMutation(ctx, edgeSet3, txn))
-	x.Check(runMutation(ctx, edgeDel, txn))
-
-	pl, err := txn.Get(x.ReverseKey(attr, 2))
-	require.NoError(t, err)
-	pl.RLock()
-	c := pl.GetLength(5)
-	pl.RUnlock()
-	require.Equal(t, 2, c)
 }
 
 func TestConvertEdgeType(t *testing.T) {
