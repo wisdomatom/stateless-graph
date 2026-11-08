@@ -29,7 +29,6 @@ import (
 	"github.com/wisdomatom/stateless-graph/worker"
 	"github.com/wisdomatom/stateless-graph/x"
 	"github.com/dgraph-io/ristretto/v2/z"
-	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -71,12 +70,12 @@ var (
 )
 
 func NewDgraphEmbed(conf DgraphServer) (*EmbedDgraph, error) {
-	err := os.Mkdir(conf.EmbedDataDir, 0750)
-	if err != nil && !errors.Is(err, os.ErrExist) {
+	err := os.MkdirAll(conf.EmbedDataDir, 0750)
+	if err != nil {
 		return nil, err
 	}
-	err = os.Mkdir(path.Join(conf.EmbedDataDir, "zw"), 0750)
-	if err != nil && !errors.Is(err, os.ErrExist) {
+	err = os.MkdirAll(path.Join(conf.EmbedDataDir, "zw"), 0750)
+	if err != nil {
 		return nil, err
 	}
 	f, err := os.OpenFile(path.Join(conf.EmbedDataDir, "zw", "wal.meta"), os.O_RDWR|os.O_CREATE, 0600)
