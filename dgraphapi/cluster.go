@@ -21,7 +21,6 @@ import (
 
 	"github.com/dgraph-io/dgo/v250"
 	"github.com/dgraph-io/dgo/v250/protos/api"
-	"github.com/wisdomatom/stateless-graph/graphql/schema"
 	"github.com/wisdomatom/stateless-graph/x"
 )
 
@@ -66,11 +65,19 @@ type HTTPClient struct {
 	moveTabletURL string
 }
 
+type RequestExtensions struct {
+	PersistedQuery PersistedQuery `json:"persistedQuery,omitempty"`
+}
+
+type PersistedQuery struct {
+	Sha256Hash string `json:"sha256Hash,omitempty"`
+}
+
 // GraphQLParams are used for making graphql requests to dgraph
 type GraphQLParams struct {
-	Query      string                    `json:"query"`
-	Variables  map[string]interface{}    `json:"variables"`
-	Extensions *schema.RequestExtensions `json:"extensions,omitempty"`
+	Query      string             `json:"query"`
+	Variables  map[string]any     `json:"variables"`
+	Extensions *RequestExtensions `json:"extensions,omitempty"`
 }
 
 type GraphQLResponse struct {
@@ -619,7 +626,7 @@ func (hc *HTTPClient) UpdateGQLSchema(sch string) error {
 func (hc *HTTPClient) PostPersistentQuery(query, sha string) ([]byte, error) {
 	params := GraphQLParams{
 		Query: query,
-		Extensions: &schema.RequestExtensions{PersistedQuery: schema.PersistedQuery{
+		Extensions: &RequestExtensions{PersistedQuery: PersistedQuery{
 			Sha256Hash: sha,
 		}},
 	}

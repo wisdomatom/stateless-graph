@@ -39,7 +39,6 @@ import (
 	"github.com/wisdomatom/stateless-graph/chunker"
 	"github.com/wisdomatom/stateless-graph/conn"
 	"github.com/wisdomatom/stateless-graph/dql"
-	gqlSchema "github.com/wisdomatom/stateless-graph/graphql/schema"
 	"github.com/wisdomatom/stateless-graph/protos/pb"
 	"github.com/wisdomatom/stateless-graph/query"
 	"github.com/wisdomatom/stateless-graph/schema"
@@ -1145,11 +1144,6 @@ type queryContext struct {
 	span trace.Span
 	// graphql indicates whether the given request is from graphql admin or not.
 	graphql bool
-	// gqlField stores the GraphQL field for which the query is being processed.
-	// This would be set only if the request is a query from GraphQL layer,
-	// otherwise it would be nil. (Eg. nil cases: in case of a DQL query,
-	// a mutation being executed from GraphQL layer).
-	gqlField gqlSchema.Field
 	// nquadsCount maintains numbers of nquads which would be inserted as part of this request.
 	// In some cases(mostly upserts), numbers of nquads to be inserted can to huge(we have seen upto
 	// 1B) and resulting in OOM. We are limiting number of nquads which can be inserted in
@@ -1165,8 +1159,6 @@ type queryContext struct {
 type Request struct {
 	// req is the incoming gRPC request
 	req *api.Request
-	// gqlField is the GraphQL field for which the request is being sent
-	gqlField gqlSchema.Field
 	// doAuth tells whether this request needs ACL authorization or not
 	doAuth AuthMode
 }
@@ -1273,23 +1265,6 @@ func getAuthMode(ctx context.Context) AuthMode {
 		return NeedAuthorize
 	}
 	return NoAuthorize
-}
-
-// QueryGraphQL handles only GraphQL queries, neither mutations nor DQL.
-func (s *Server) QueryGraphQL(ctx context.Context, req *api.Request,
-	field gqlSchema.Field) (*api.Response, error) {
-	// Add a timeout for queries which don't have a deadline set. We don't want to
-	// apply a timeout if it's a mutation, that's currently handled by flag
-	// "txn-abort-after".
-	if req.GetMutations() == nil && x.Config.QueryTimeout != 0 {
-		if d, _ := ctx.Deadline(); d.IsZero() {
-			var cancel context.CancelFunc
-			ctx, cancel = context.WithTimeout(ctx, x.Config.QueryTimeout)
-			defer cancel()
-		}
-	}
-	// no need to attach namespace here, it is already done by GraphQL layer
-	return s.doQuery(ctx, &Request{req: req, gqlField: field, doAuth: getAuthMode(ctx)})
 }
 
 func (s *Server) Query(ctx context.Context, req *api.Request) (*api.Response, error) {
@@ -1438,11 +1413,10 @@ func (s *Server) doQuery(ctx context.Context, req *Request) (resp *api.Response,
 	}
 
 	qc := &queryContext{
-		req:      req.req,
-		latency:  l,
-		span:     span,
-		graphql:  isGraphQL,
-		gqlField: req.gqlField,
+		req:     req.req,
+		latency: l,
+		span:    span,
+		graphql: isGraphQL,
 	}
 	if rerr = parseRequest(ctx, qc); rerr != nil {
 		return
@@ -1476,21 +1450,9 @@ func (s *Server) doQuery(ctx context.Context, req *Request) (resp *api.Response,
 		}()
 	}
 
-	var gqlErrs error
 	if resp, rerr = processQuery(ctx, qc); rerr != nil {
-		// if rerr is just some error from GraphQL encoding, then we need to continue the normal
-		// execution ignoring the error as we still need to assign latency info to resp. If we can
-		// change the api.Response proto to have a field to contain GraphQL errors, that would be
-		// great. Otherwise, we will have to do such checks a lot and that would make code ugly.
-		if qc.gqlField != nil && x.IsGqlErrorList(rerr) {
-			gqlErrs = rerr
-		} else {
-			return
-		}
+		return
 	}
-	// if it were a mutation, simple or upsert, in any case gqlErrs would be empty as GraphQL JSON
-	// is formed only for queries. So, gqlErrs can have something only in the case of a pure query.
-	// So, safe to ignore gqlErrs and not return that here.
 	if rerr = s.doMutate(ctx, qc, resp); rerr != nil {
 		return
 	}
@@ -1509,7 +1471,7 @@ func (s *Server) doQuery(ctx context.Context, req *Request) (resp *api.Response,
 		TotalNs:           uint64((time.Since(l.Start)).Nanoseconds()),
 	}
 
-	return resp, gqlErrs
+	return resp, nil
 }
 
 func processQuery(ctx context.Context, qc *queryContext) (*api.Response, error) {
@@ -1598,11 +1560,9 @@ func processQuery(ctx context.Context, qc *queryContext) (*api.Response, error) 
 	} else if qc.req.RespFormat == api.Request_RDF {
 		resp.Rdf, err = query.ToRDF(qc.latency, er.Subgraphs)
 	} else {
-		resp.Json, err = query.ToJson(ctx, qc.latency, er.Subgraphs, qc.gqlField)
+		resp.Json, err = query.ToJson(ctx, qc.latency, er.Subgraphs)
 	}
-	// if err is just some error from GraphQL encoding, then we need to continue the normal
-	// execution ignoring the error as we still need to assign metrics and latency info to resp.
-	if err != nil && (qc.gqlField == nil || !x.IsGqlErrorList(err)) {
+	if err != nil {
 		return resp, err
 	}
 	qc.span.AddEvent("Response",

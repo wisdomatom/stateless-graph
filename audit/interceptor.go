@@ -19,7 +19,6 @@ import (
 	"strings"
 	"sync/atomic"
 
-	"github.com/wisdomatom/stateless-graph/graphql/schema"
 	"github.com/wisdomatom/stateless-graph/x"
 	"github.com/dgraph-io/gqlparser/v2/ast"
 	"github.com/dgraph-io/gqlparser/v2/parser"
@@ -109,7 +108,14 @@ func AuditRequestHttp(next http.Handler) http.Handler {
 	})
 }
 
-func AuditWebSockets(ctx context.Context, req *schema.Request) {
+type GqlRequest struct {
+	Query         string                 `json:"query"`
+	OperationName string                 `json:"operationName"`
+	Variables     map[string]interface{} `json:"variables"`
+	Header        http.Header            `json:"-"`
+}
+
+func AuditWebSockets(ctx context.Context, req *GqlRequest) {
 	if atomic.LoadUint32(&auditEnabled) == 0 {
 		return
 	}
@@ -228,7 +234,7 @@ func auditHttp(w *ResponseWriter, r *http.Request) {
 // password fields are accessible only via /admin endpoint hence,
 // this will be only called with /admin endpoint
 func maskPasswordFieldsInGQL(req string) string {
-	var gqlReq schema.Request
+	var gqlReq GqlRequest
 	err := json.Unmarshal([]byte(req), &gqlReq)
 	if err != nil {
 		glog.Errorf("unable to unmarshal gql request %v", err)

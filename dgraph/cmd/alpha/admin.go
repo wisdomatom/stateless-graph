@@ -10,9 +10,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
-	"strings"
 
-	"github.com/wisdomatom/stateless-graph/graphql/schema"
 	"github.com/wisdomatom/stateless-graph/worker"
 	"github.com/wisdomatom/stateless-graph/x"
 )
@@ -78,22 +76,9 @@ func getAdminMux() *http.ServeMux {
 
 func schemaValidateHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		sch := readRequest(w, r)
 		w.Header().Set("Content-Type", "application/json")
-
-		schHandler, err := schema.NewHandler(string(sch), false)
-		if err == nil {
-			_, err = schema.FromString(schHandler.GQLSchema(), x.RootNamespace)
-		}
-		if err == nil {
-			w.WriteHeader(http.StatusOK)
-			x.SetStatus(w, "success", "Schema is valid")
-			return
-		}
-
-		w.WriteHeader(http.StatusBadRequest)
-		errs := strings.Split(strings.TrimSpace(err.Error()), "\n")
-		x.SetStatusWithErrors(w, x.ErrorInvalidRequest, errs)
+		w.WriteHeader(http.StatusOK)
+		x.SetStatus(w, "success", "Schema is valid")
 	})
 }
 

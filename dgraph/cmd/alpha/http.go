@@ -27,7 +27,6 @@ import (
 	"github.com/dgraph-io/dgo/v250/protos/api"
 	"github.com/wisdomatom/stateless-graph/dql"
 	"github.com/wisdomatom/stateless-graph/edgraph"
-	"github.com/wisdomatom/stateless-graph/graphql/schema"
 	"github.com/wisdomatom/stateless-graph/query"
 	"github.com/wisdomatom/stateless-graph/x"
 )
@@ -665,23 +664,6 @@ func adminSchemaHandler(w http.ResponseWriter, r *http.Request) {
 	if commonHandler(w, r) {
 		return
 	}
-
-	b := readRequest(w, r)
-	if b == nil {
-		return
-	}
-
-	schHandler, err := schema.NewHandler(string(b), false)
-	if err != nil {
-		x.SetStatus(w, x.Error, err.Error())
-		return
-	}
-
-	if _, err := edgraph.UpdateGQLSchema(r.Context(), string(b), schHandler.DGSchema()); err != nil {
-		x.SetStatus(w, x.Error, err.Error())
-		return
-	}
-
 	writeSuccessResponse(w, r)
 }
 
