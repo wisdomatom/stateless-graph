@@ -28,6 +28,7 @@ import (
 	"github.com/wisdomatom/stateless-graph/posting"
 	"github.com/wisdomatom/stateless-graph/protos/pb"
 	"github.com/wisdomatom/stateless-graph/schema"
+	"github.com/wisdomatom/stateless-graph/storage/flat"
 	"github.com/wisdomatom/stateless-graph/tok/hnsw"
 	"github.com/wisdomatom/stateless-graph/types"
 	"github.com/wisdomatom/stateless-graph/x"
@@ -95,14 +96,23 @@ func runMutation(ctx context.Context, edge *pb.DirectedEdge, txn *posting.Txn) e
 		return ApplyFlatMutation(ctx, edge, txn.KVTxn)
 	}
 
-	key := x.DataKey(edge.Attr, edge.Entity)
-	// The following is a performance optimization which allows us to not read a posting list from
-	// disk. We calculate this based on how AddMutationWithIndex works. The general idea is that if
-	// we're not using the read posting list, we don't need to retrieve it. We need the posting list
-	// if we're doing count index or delete operation. For scalar predicates, we just get the last item merged.
-	// In other cases, we can just create a posting list facade in memory and use it to store the delta in Badger.
-	// Later, the rollup operation would consolidate all these deltas into a posting list.
 	isList := su.GetList()
+	if !isList {
+		if txn.KVTxn == nil && pstore != nil {
+			txn.KVTxn = pstore.NewTransactionAt(txn.StartTs, true)
+		}
+		if txn.KVTxn != nil {
+			ns, rawAttr := parseNamespaceSafe(edge.Attr)
+			attrID := flat.PredicateToAttrID(rawAttr)
+			shardID := flat.CalculateShardID(edge.Entity, 0)
+			lockKey := flat.EncodeDataKey(shardID, ns, attrID, edge.Entity)
+			if err := txn.KVTxn.Set(lockKey, []byte{1}); err != nil {
+				return err
+			}
+		}
+	}
+
+	key := x.DataKey(edge.Attr, edge.Entity)
 	var getFn func(key []byte) (*posting.List, error)
 	switch {
 	case len(edge.Lang) == 0 && !isList:

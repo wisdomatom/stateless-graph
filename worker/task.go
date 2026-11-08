@@ -32,6 +32,7 @@ import (
 	"github.com/wisdomatom/stateless-graph/protos/pb"
 	"github.com/wisdomatom/stateless-graph/schema"
 	ctask "github.com/wisdomatom/stateless-graph/task"
+	"github.com/wisdomatom/stateless-graph/storage/flat"
 	"github.com/wisdomatom/stateless-graph/tok"
 	"github.com/wisdomatom/stateless-graph/tok/hnsw"
 	"github.com/wisdomatom/stateless-graph/tok/index"
@@ -850,27 +851,40 @@ func (qs *queryState) handleUidPostings(
 				}
 			}
 
-			if x.WorkerConfig.UseFlatStorage && srcFn.fnType == notAFunction {
-				readTxn := pstore.NewTransactionAt(q.ReadTs, false)
-				if q.Reverse {
-					uidList, err := FlatScanReverseEdges(ctx, readTxn, q.Attr, q.UidList.Uids[i], opts)
+			if x.WorkerConfig.UseFlatStorage {
+				if srcFn.fnType == notAFunction {
+					readTxn := pstore.NewTransactionAt(q.ReadTs, false)
+					if q.Reverse {
+						uidList, err := FlatScanReverseEdges(ctx, readTxn, q.Attr, q.UidList.Uids[i], opts)
+						readTxn.Discard()
+						if err != nil {
+							return err
+						}
+						out.UidMatrix = append(out.UidMatrix, uidList)
+					} else {
+						uidList, facets, err := FlatScanEdges(ctx, readTxn, q.Attr, q.UidList.Uids[i], opts)
+						readTxn.Discard()
+						if err != nil {
+							return err
+						}
+						out.UidMatrix = append(out.UidMatrix, uidList)
+						if q.FacetParam != nil {
+							out.FacetMatrix = append(out.FacetMatrix, &pb.FacetsList{FacetsList: facets})
+						}
+					}
+					continue
+				} else if len(srcFn.tokens) > i {
+					readTxn := pstore.NewTransactionAt(q.ReadTs, false)
+					ns, rawAttr := parseNamespaceSafe(q.Attr)
+					attrID := flat.PredicateToAttrID(rawAttr)
+					uids, err := GlobalFlatEngine.ScanIndex(readTxn, 0, ns, attrID, []byte(srcFn.tokens[i]))
 					readTxn.Discard()
 					if err != nil {
 						return err
 					}
-					out.UidMatrix = append(out.UidMatrix, uidList)
-				} else {
-					uidList, facets, err := FlatScanEdges(ctx, readTxn, q.Attr, q.UidList.Uids[i], opts)
-					readTxn.Discard()
-					if err != nil {
-						return err
-					}
-					out.UidMatrix = append(out.UidMatrix, uidList)
-					if q.FacetParam != nil {
-						out.FacetMatrix = append(out.FacetMatrix, &pb.FacetsList{FacetsList: facets})
-					}
+					out.UidMatrix = append(out.UidMatrix, &pb.List{Uids: uids})
+					continue
 				}
-				continue
 			}
 
 			var key []byte

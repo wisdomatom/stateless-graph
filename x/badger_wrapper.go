@@ -7,6 +7,8 @@ package x
 
 import (
 	"context"
+	"sort"
+	"sync"
 
 	"github.com/dgraph-io/badger/v4"
 	"github.com/dgraph-io/badger/v4/pb"
@@ -131,7 +133,74 @@ func (s *badgerStreamWriter) Cancel() {
 }
 
 type badgerTxn struct {
-	txn *badger.Txn
+	txn        *badger.Txn
+	lockedKeys []string
+}
+
+var memLockMgr = newMemoryLockManager()
+
+type memoryLockManager struct {
+	mu    sync.Mutex
+	locks map[string]chan struct{}
+}
+
+func newMemoryLockManager() *memoryLockManager {
+	return &memoryLockManager{
+		locks: make(map[string]chan struct{}),
+	}
+}
+
+func (m *memoryLockManager) Lock(ctx context.Context, keys ...[]byte) ([]string, error) {
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	keyStrs := make([]string, 0, len(keys))
+	set := make(map[string]struct{}, len(keys))
+	for _, k := range keys {
+		s := string(k)
+		if _, ok := set[s]; !ok {
+			set[s] = struct{}{}
+			keyStrs = append(keyStrs, s)
+		}
+	}
+	sort.Strings(keyStrs)
+
+	acquired := make([]string, 0, len(keyStrs))
+	for _, k := range keyStrs {
+		for {
+			m.mu.Lock()
+			ch, exists := m.locks[k]
+			if !exists {
+				m.locks[k] = make(chan struct{})
+				m.mu.Unlock()
+				acquired = append(acquired, k)
+				break
+			}
+			m.mu.Unlock()
+
+			select {
+			case <-ctx.Done():
+				m.Unlock(acquired...)
+				return nil, ctx.Err()
+			case <-ch:
+			}
+		}
+	}
+	return acquired, nil
+}
+
+func (m *memoryLockManager) Unlock(keys ...string) {
+	if len(keys) == 0 {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, k := range keys {
+		if ch, exists := m.locks[k]; exists {
+			delete(m.locks, k)
+			close(ch)
+		}
+	}
 }
 
 func (t *badgerTxn) Get(key []byte) (KVItem, error) {
@@ -181,10 +250,20 @@ func (t *badgerTxn) Delete(key []byte) error {
 }
 
 func (t *badgerTxn) CommitAt(commitTs uint64, callback func(error)) error {
+	defer func() {
+		if len(t.lockedKeys) > 0 {
+			memLockMgr.Unlock(t.lockedKeys...)
+			t.lockedKeys = nil
+		}
+	}()
 	return t.txn.CommitAt(commitTs, callback)
 }
 
 func (t *badgerTxn) Discard() {
+	if len(t.lockedKeys) > 0 {
+		memLockMgr.Unlock(t.lockedKeys...)
+		t.lockedKeys = nil
+	}
 	t.txn.Discard()
 }
 
@@ -199,6 +278,11 @@ func (t *badgerTxn) NewIterator(opt KVIterOpts) KVIterator {
 }
 
 func (t *badgerTxn) LockKeys(ctx context.Context, keys ...[]byte) error {
+	acquired, err := memLockMgr.Lock(ctx, keys...)
+	if err != nil {
+		return err
+	}
+	t.lockedKeys = append(t.lockedKeys, acquired...)
 	return nil
 }
 

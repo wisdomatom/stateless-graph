@@ -43,6 +43,14 @@ func ApplyFlatMutation(ctx context.Context, edge *pb.DirectedEdge, txn x.KVTxn) 
 
 	// 1. 关系边处理 (Edge.ValueId != 0)
 	if edge.ValueId != 0 {
+		isList := schema.State().IsList(edge.Attr)
+		if !isList {
+			lockKey := flat.EncodeDataKey(shardID, ns, attrID, edge.Entity)
+			if err := txn.LockKeys(ctx, lockKey); err != nil {
+				return err
+			}
+		}
+
 		var facetsBytes []byte
 		if len(edge.Facets) > 0 {
 			facets := &pb.Facets{Facets: edge.Facets}
@@ -66,6 +74,23 @@ func ApplyFlatMutation(ctx context.Context, edge *pb.DirectedEdge, txn x.KVTxn) 
 				}
 			}
 		} else {
+			if !isList {
+				// 单值关系写入：清理同一 Entity 下可能存在的旧正向出边
+				if it, err := GlobalFlatEngine.ScanOutEdges(txn, shardID, ns, attrID, edge.Entity); err == nil {
+					for it.Next() {
+						oldToUID := it.Entry().ToUID
+						if oldToUID != edge.ValueId {
+							_ = GlobalFlatEngine.DeleteEdge(txn, shardID, ns, attrID, edge.Entity, oldToUID)
+							if schema.State().IsReversed(ctx, edge.Attr) {
+								revShard := flat.CalculateShardID(oldToUID, 0)
+								_ = GlobalFlatEngine.DeleteReverseEdge(txn, revShard, ns, attrID, oldToUID, edge.Entity)
+							}
+						}
+					}
+					it.Close()
+				}
+			}
+
 			// 添加/覆盖正向边
 			if err := GlobalFlatEngine.AddEdge(txn, shardID, ns, attrID, edge.Entity, edge.ValueId, facetsBytes); err != nil {
 				return err
@@ -82,6 +107,12 @@ func ApplyFlatMutation(ctx context.Context, edge *pb.DirectedEdge, txn x.KVTxn) 
 	}
 
 	// 2. 标量属性处理 (Edge.ValueId == 0)
+	if !schema.State().IsList(edge.Attr) {
+		lockKey := flat.EncodeDataKey(shardID, ns, attrID, edge.Entity)
+		if err := txn.LockKeys(ctx, lockKey); err != nil {
+			return err
+		}
+	}
 	if edge.Op == pb.DirectedEdge_DEL {
 		// 删除标量属性
 		if err := GlobalFlatEngine.DeleteData(txn, shardID, ns, attrID, edge.Entity); err != nil {
@@ -94,8 +125,13 @@ func ApplyFlatMutation(ctx context.Context, edge *pb.DirectedEdge, txn x.KVTxn) 
 				Tid:   types.TypeID(edge.ValueType),
 				Value: edge.Value,
 			}
+			sv, err := types.Convert(val, types.TypeID(edge.ValueType))
+			valVal := val.Value
+			if err == nil {
+				valVal = sv.Value
+			}
 			for _, t := range tokenizers {
-				tokens, err := tok.BuildTokens(val.Value, tok.GetTokenizerForLang(t, edge.Lang))
+				tokens, err := tok.BuildTokens(valVal, tok.GetTokenizerForLang(t, edge.Lang))
 				if err == nil {
 					for _, token := range tokens {
 						_ = GlobalFlatEngine.DeleteIndex(txn, shardID, ns, attrID, []byte(token), edge.Entity)
@@ -115,8 +151,13 @@ func ApplyFlatMutation(ctx context.Context, edge *pb.DirectedEdge, txn x.KVTxn) 
 				Tid:   types.TypeID(edge.ValueType),
 				Value: edge.Value,
 			}
+			sv, err := types.Convert(val, types.TypeID(edge.ValueType))
+			valVal := val.Value
+			if err == nil {
+				valVal = sv.Value
+			}
 			for _, t := range tokenizers {
-				tokens, err := tok.BuildTokens(val.Value, tok.GetTokenizerForLang(t, edge.Lang))
+				tokens, err := tok.BuildTokens(valVal, tok.GetTokenizerForLang(t, edge.Lang))
 				if err == nil {
 					for _, token := range tokens {
 						if err := GlobalFlatEngine.AddIndex(txn, shardID, ns, attrID, []byte(token), edge.Entity); err != nil {

@@ -16,6 +16,7 @@ import (
 	"github.com/dgraph-io/ristretto/v2/z"
 	"github.com/pingcap/log"
 	"github.com/pkg/errors"
+	"github.com/tikv/client-go/v2/kv"
 	"github.com/tikv/client-go/v2/tikv"
 	"github.com/tikv/client-go/v2/txnkv"
 	"github.com/tikv/client-go/v2/txnkv/transaction"
@@ -65,7 +66,7 @@ func (t *tikvDB) NewTransactionAt(readTs uint64, update bool) KVTxn {
 	}
 	var txn *transaction.KVTxn
 	var err error
-	if !update && readTs > 0 && readTs < math.MaxUint64 {
+	if readTs > 0 && readTs < math.MaxUint64 {
 		txn, err = t.client.Begin(tikv.WithStartTS(readTs))
 	} else {
 		txn, err = t.client.Begin()
@@ -412,8 +413,10 @@ func (tx *tikvTxn) NewIterator(opt KVIterOpts) KVIterator {
 }
 
 func (tx *tikvTxn) LockKeys(ctx context.Context, keys ...[]byte) error {
-	// return tx.txn.LockKeys(ctx, &kv.LockCtx{}, keys...)
-	return nil
+	if len(keys) == 0 {
+		return nil
+	}
+	return tx.txn.LockKeys(ctx, &kv.LockCtx{}, keys...)
 }
 
 type tikvItem struct {
