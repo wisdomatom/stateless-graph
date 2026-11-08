@@ -253,8 +253,12 @@ func (s *ServerState) Dispose() {
 }
 
 func (s *ServerState) GetTimestamp(readOnly bool) uint64 {
-	ts, err := s.Pstore.GetTimestamp(context.Background())
-	if err != nil {
+	var ts uint64
+	var err error
+	if s.Pstore != nil {
+		ts, err = s.Pstore.GetTimestamp(context.Background())
+	}
+	if s.Pstore == nil || err != nil {
 		// Fallback to local counter if KV doesn't support global TS
 		ts = x.GetNextTs()
 	}

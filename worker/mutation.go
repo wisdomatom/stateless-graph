@@ -88,6 +88,13 @@ func runMutation(ctx context.Context, edge *pb.DirectedEdge, txn *posting.Txn) e
 		return err
 	}
 
+	if x.WorkerConfig.UseFlatStorage {
+		if txn.KVTxn == nil && pstore != nil {
+			txn.KVTxn = pstore.NewTransactionAt(txn.StartTs, true)
+		}
+		return ApplyFlatMutation(ctx, edge, txn.KVTxn)
+	}
+
 	key := x.DataKey(edge.Attr, edge.Entity)
 	// The following is a performance optimization which allows us to not read a posting list from
 	// disk. We calculate this based on how AddMutationWithIndex works. The general idea is that if
@@ -945,14 +952,22 @@ func CommitOverNetwork(ctx context.Context, tc *api.TxnContext) (uint64, error) 
 	// Local commit logic: write deltas to disk and update cache
 	txn := posting.Oracle().GetTxn(tc.StartTs)
 	if txn != nil {
-		writer := posting.NewTxnWriter(pstore)
-		if err := txn.CommitToDisk(writer, commitTs); err != nil {
-			return 0, err
+		if x.WorkerConfig.UseFlatStorage {
+			if txn.KVTxn != nil {
+				if err := txn.KVTxn.CommitAt(commitTs, nil); err != nil {
+					return 0, err
+				}
+			}
+		} else {
+			writer := posting.NewTxnWriter(pstore)
+			if err := txn.CommitToDisk(writer, commitTs); err != nil {
+				return 0, err
+			}
+			if err := writer.Flush(); err != nil {
+				return 0, err
+			}
+			txn.UpdateCachedKeys(commitTs)
 		}
-		if err := writer.Flush(); err != nil {
-			return 0, err
-		}
-		txn.UpdateCachedKeys(commitTs)
 	}
 
 	posting.Oracle().SetMaxAssigned(commitTs)

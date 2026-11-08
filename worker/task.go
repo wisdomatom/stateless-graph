@@ -849,6 +849,30 @@ func (qs *queryState) handleUidPostings(
 				default:
 				}
 			}
+
+			if x.WorkerConfig.UseFlatStorage && srcFn.fnType == notAFunction {
+				readTxn := pstore.NewTransactionAt(q.ReadTs, false)
+				if q.Reverse {
+					uidList, err := FlatScanReverseEdges(ctx, readTxn, q.Attr, q.UidList.Uids[i], opts)
+					readTxn.Discard()
+					if err != nil {
+						return err
+					}
+					out.UidMatrix = append(out.UidMatrix, uidList)
+				} else {
+					uidList, facets, err := FlatScanEdges(ctx, readTxn, q.Attr, q.UidList.Uids[i], opts)
+					readTxn.Discard()
+					if err != nil {
+						return err
+					}
+					out.UidMatrix = append(out.UidMatrix, uidList)
+					if q.FacetParam != nil {
+						out.FacetMatrix = append(out.FacetMatrix, &pb.FacetsList{FacetsList: facets})
+					}
+				}
+				continue
+			}
+
 			var key []byte
 			switch srcFn.fnType {
 			case notAFunction, compareScalarFn, hasFn, uidInFn:

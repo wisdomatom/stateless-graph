@@ -29,10 +29,11 @@ func TestReverseEdge(t *testing.T) {
 	opt := badger.DefaultOptions(dir)
 	ps, err := badger.OpenManaged(opt)
 	x.Check(err)
-	pstore = ps
+	bkv := x.NewBadgerKV(ps)
+	pstore = bkv
 	// Not using posting list cache
-	posting.Init(ps, 0, false)
-	Init(ps)
+	posting.Init(bkv, 0, false)
+	Init(bkv)
 	err = schema.ParseBytes([]byte("revc: [uid] @reverse @count ."), 1)
 	require.NoError(t, err)
 
@@ -66,10 +67,11 @@ func TestReverseEdgeSetDel(t *testing.T) {
 	opt := badger.DefaultOptions(dir)
 	ps, err := badger.OpenManaged(opt)
 	x.Check(err)
-	pstore = ps
+	bkv := x.NewBadgerKV(ps)
+	pstore = bkv
 	// Not using posting list cache
-	posting.Init(ps, 0, false)
-	Init(ps)
+	posting.Init(bkv, 0, false)
+	Init(bkv)
 	err = schema.ParseBytes([]byte("revc: [uid] @reverse @count ."), 1)
 	require.NoError(t, err)
 

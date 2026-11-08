@@ -60,8 +60,9 @@ type DgraphServer struct {
 	User         string   `toml:"user" mapstructure:"user"`
 	Password     string   `toml:"password" mapstructure:"password"`
 	Embed        bool     `toml:"embed" mapstructure:"embed"`
-	EmbedDataDir string   `toml:"embed_data_dir" mapstructure:"embed_data_dir"`
-	TiKVAddrs    []string `toml:"tikv_addrs" mapstructure:"tikv_addrs"`
+	EmbedDataDir   string   `toml:"embed_data_dir" mapstructure:"embed_data_dir"`
+	TiKVAddrs      []string `toml:"tikv_addrs" mapstructure:"tikv_addrs"`
+	UseFlatStorage bool     `toml:"use_flat_storage" mapstructure:"use_flat_storage"`
 }
 
 var (
@@ -92,6 +93,7 @@ func NewDgraphEmbed(conf DgraphServer) (*EmbedDgraph, error) {
 	x.WorkerConfig.HardSync = false
 	x.WorkerConfig.TiKVAddrs = conf.TiKVAddrs
 	x.WorkerConfig.Embedded = true
+	x.WorkerConfig.UseFlatStorage = conf.UseFlatStorage
 
 	ed := &EmbedDgraph{
 		lock:   &sync.Mutex{},

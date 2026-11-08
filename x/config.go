@@ -144,6 +144,8 @@ type WorkerOptions struct {
 	Stateless bool
 	// Embedded indicates the engine is running in in-process embedded mode.
 	Embedded bool
+	// UseFlatStorage enables the pure flattened KV storage model (no posting list/deltas/rollups).
+	UseFlatStorage bool
 }
 
 // WorkerConfig stores the global instance of the worker package's options.

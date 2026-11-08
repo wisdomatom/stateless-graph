@@ -21,23 +21,22 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func readPostingListFromDisk(key []byte, pstore *badger.DB, readTs uint64) (*posting.List, error) {
-	txn := pstore.NewTransactionAt(readTs, false)
+func readPostingListFromDisk(key []byte, kv x.KVDB, readTs uint64) (*posting.List, error) {
+	txn := kv.NewTransactionAt(readTs, false)
 	defer txn.Discard()
 
-	// When we do rollups, an older version would go to the top of the LSM tree, which can cause
-	// issues during txn.Get. Therefore, always iterate.
-	iterOpts := badger.DefaultIteratorOptions
-	iterOpts.AllVersions = true
-	iterOpts.PrefetchValues = false
-	itr := txn.NewKeyIterator(key, iterOpts)
+	opt := x.KVIterOpts{
+		Prefix:      key,
+		AllVersions: true,
+	}
+	itr := txn.NewIterator(opt)
 	defer itr.Close()
 	itr.Seek(key)
 	return posting.ReadPostingList(key, itr)
 }
 
-func rollup(t *testing.T, key []byte, pstore *badger.DB, readTs uint64) {
-	ol, err := readPostingListFromDisk(key, pstore, readTs)
+func rollup(t *testing.T, key []byte, kv x.KVDB, readTs uint64) {
+	ol, err := readPostingListFromDisk(key, kv, readTs)
 	require.NoError(t, err)
 	kvs, err := ol.Rollup(nil, readTs+1)
 	require.NoError(t, err)
@@ -63,9 +62,10 @@ func TestEmptyTypeSchema(t *testing.T) {
 	opt := badger.DefaultOptions(dir)
 	ps, err := badger.OpenManaged(opt)
 	x.Check(err)
-	pstore = ps
-	posting.Init(ps, 0, false)
-	Init(ps)
+	bkv := x.NewBadgerKV(ps)
+	pstore = bkv
+	posting.Init(bkv, 0, false)
+	Init(bkv)
 
 	typeName := "1-temp"
 	ts := uint64(10)
@@ -79,7 +79,7 @@ func TestEmptyTypeSchema(t *testing.T) {
 	require.Nil(t, txn.SetEntry(e.WithDiscard()))
 	require.Nil(t, txn.CommitAt(ts, nil))
 
-	schema.Init(ps)
+	schema.Init(bkv)
 	require.Nil(t, schema.LoadFromDb(context.Background()))
 
 	req := &pb.SchemaRequest{}
@@ -99,8 +99,10 @@ func TestDeleteSetWithVarEdgeCorruptsData(t *testing.T) {
 	opt := badger.DefaultOptions(dir)
 	ps, err := badger.OpenManaged(opt)
 	require.NoError(t, err)
-	posting.Init(ps, 0, false)
-	Init(ps)
+	bkv := x.NewBadgerKV(ps)
+	pstore = bkv
+	posting.Init(bkv, 0, false)
+	Init(bkv)
 
 	// Set schema
 	schemaTxt := `
@@ -125,7 +127,7 @@ func TestDeleteSetWithVarEdgeCorruptsData(t *testing.T) {
 			require.NoError(t, runMutation(ctx, edge, txn))
 		}
 		txn.Update()
-		writer := posting.NewTxnWriter(ps)
+		writer := posting.NewTxnWriter(bkv)
 		require.NoError(t, txn.CommitToDisk(writer, commitTs))
 		require.NoError(t, writer.Flush())
 		txn.UpdateCachedKeys(commitTs)
@@ -157,7 +159,7 @@ func TestDeleteSetWithVarEdgeCorruptsData(t *testing.T) {
 	})
 
 	key := x.DataKey(attrOffice, uidJohn)
-	rollup(t, key, ps, 4)
+	rollup(t, key, bkv, 4)
 
 	// Second mutation: Remove John from Leopard, assign Amanda
 	uidAmanda := uint64(3)
@@ -216,9 +218,10 @@ func TestGetScalarList(t *testing.T) {
 	opt := badger.DefaultOptions(dir)
 	ps, err := badger.OpenManaged(opt)
 	x.Check(err)
-	pstore = ps
-	posting.Init(ps, 0, false)
-	Init(ps)
+	bkv := x.NewBadgerKV(ps)
+	pstore = bkv
+	posting.Init(bkv, 0, false)
+	Init(bkv)
 	err = schema.ParseBytes([]byte("scalarPredicateCount4: uid ."), 1)
 	require.NoError(t, err)
 
@@ -245,7 +248,7 @@ func TestGetScalarList(t *testing.T) {
 	}})
 
 	key := x.DataKey(attr, 1)
-	rollup(t, key, ps, 8)
+	rollup(t, key, bkv, 8)
 
 	runM(9, 11, []*pb.DirectedEdge{{
 		ValueId:   5,
@@ -271,9 +274,10 @@ func TestMultipleTxnListCount(t *testing.T) {
 	opt := badger.DefaultOptions(dir)
 	ps, err := badger.OpenManaged(opt)
 	x.Check(err)
-	pstore = ps
-	posting.Init(ps, 0, false)
-	Init(ps)
+	bkv := x.NewBadgerKV(ps)
+	pstore = bkv
+	posting.Init(bkv, 0, false)
+	Init(bkv)
 	err = schema.ParseBytes([]byte("scalarPredicateCount3: [uid] @count ."), 1)
 	require.NoError(t, err)
 
@@ -330,9 +334,10 @@ func TestScalarPredicateRevCount(t *testing.T) {
 	opt := badger.DefaultOptions(dir)
 	ps, err := badger.OpenManaged(opt)
 	x.Check(err)
-	pstore = ps
-	posting.Init(ps, 0, false)
-	Init(ps)
+	bkv := x.NewBadgerKV(ps)
+	pstore = bkv
+	posting.Init(bkv, 0, false)
+	Init(bkv)
 	err = schema.ParseBytes([]byte("scalarPredicateCount2: uid @reverse @count ."), 1)
 	require.NoError(t, err)
 
@@ -412,9 +417,10 @@ func TestScalarPredicateIntCount(t *testing.T) {
 	opt := badger.DefaultOptions(dir)
 	ps, err := badger.OpenManaged(opt)
 	x.Check(err)
-	pstore = ps
-	posting.Init(ps, 0, false)
-	Init(ps)
+	bkv := x.NewBadgerKV(ps)
+	pstore = bkv
+	posting.Init(bkv, 0, false)
+	Init(bkv)
 	err = schema.ParseBytes([]byte("scalarPredicateCount1: string @count ."), 1)
 	require.NoError(t, err)
 
@@ -440,7 +446,7 @@ func TestScalarPredicateIntCount(t *testing.T) {
 	})
 
 	key := x.CountKey(attr, 1, false)
-	rollup(t, key, ps, 8)
+	rollup(t, key, bkv, 8)
 
 	runM(9, 11, &pb.DirectedEdge{
 		Value:     []byte("a"),
@@ -466,9 +472,10 @@ func TestScalarPredicateCount(t *testing.T) {
 	opt := badger.DefaultOptions(dir)
 	ps, err := badger.OpenManaged(opt)
 	x.Check(err)
-	pstore = ps
-	posting.Init(ps, 0, false)
-	Init(ps)
+	bkv := x.NewBadgerKV(ps)
+	pstore = bkv
+	posting.Init(bkv, 0, false)
+	Init(bkv)
 	err = schema.ParseBytes([]byte("scalarPredicateCount: uid @count ."), 1)
 	require.NoError(t, err)
 
@@ -494,7 +501,7 @@ func TestScalarPredicateCount(t *testing.T) {
 	})
 
 	key := x.CountKey(attr, 1, false)
-	rollup(t, key, ps, 8)
+	rollup(t, key, bkv, 8)
 
 	runM(9, 11, &pb.DirectedEdge{
 		ValueId:   3,
@@ -520,9 +527,10 @@ func TestSingleUidReplacement(t *testing.T) {
 	opt := badger.DefaultOptions(dir)
 	ps, err := badger.OpenManaged(opt)
 	x.Check(err)
-	pstore = ps
-	posting.Init(ps, 0, false)
-	Init(ps)
+	bkv := x.NewBadgerKV(ps)
+	pstore = bkv
+	posting.Init(bkv, 0, false)
+	Init(bkv)
 	err = schema.ParseBytes([]byte("singleUidReplaceTest: uid ."), 1)
 	require.NoError(t, err)
 
@@ -580,9 +588,10 @@ func TestSingleString(t *testing.T) {
 	opt := badger.DefaultOptions(dir)
 	ps, err := badger.OpenManaged(opt)
 	x.Check(err)
-	pstore = ps
-	posting.Init(ps, 0, false)
-	Init(ps)
+	bkv := x.NewBadgerKV(ps)
+	pstore = bkv
+	posting.Init(bkv, 0, false)
+	Init(bkv)
 	err = schema.ParseBytes([]byte("singleUidTest: string @index(exact) @unique ."), 1)
 	require.NoError(t, err)
 
@@ -674,10 +683,11 @@ func TestLangExact(t *testing.T) {
 	opt := badger.DefaultOptions(dir)
 	ps, err := badger.OpenManaged(opt)
 	x.Check(err)
-	pstore = ps
+	bkv := x.NewBadgerKV(ps)
+	pstore = bkv
 	// Not using posting list cache
-	posting.Init(ps, 0, false)
-	Init(ps)
+	posting.Init(bkv, 0, false)
+	Init(bkv)
 	err = schema.ParseBytes([]byte("testLang: string @index(term) @lang ."), 1)
 	require.NoError(t, err)
 
@@ -740,10 +750,11 @@ func BenchmarkAddMutationWithIndex(b *testing.B) {
 	opt := badger.DefaultOptions(dir)
 	ps, err := badger.OpenManaged(opt)
 	x.Check(err)
-	pstore = ps
+	bkv := x.NewBadgerKV(ps)
+	pstore = bkv
 	// Not using posting list cache
-	posting.Init(ps, 0, false)
-	Init(ps)
+	posting.Init(bkv, 0, false)
+	Init(bkv)
 	err = schema.ParseBytes([]byte("benchmarkadd: string @index(term) ."), 1)
 	fmt.Println(err)
 	if err != nil {
