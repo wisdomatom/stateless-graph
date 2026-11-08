@@ -14,6 +14,7 @@ import (
 	"github.com/wisdomatom/stateless-graph/schema"
 	"github.com/wisdomatom/stateless-graph/storage/flat"
 	"github.com/wisdomatom/stateless-graph/tok"
+	"github.com/wisdomatom/stateless-graph/types"
 	"github.com/wisdomatom/stateless-graph/x"
 )
 
@@ -214,4 +215,126 @@ func TestFlatScalarListAndIndexedDelete(t *testing.T) {
 	idxUIDs, err = GlobalFlatEngine.ScanIndex(txn, 0, 0, flat.PredicateToAttrID("age"), []byte(toks[0]))
 	require.NoError(t, err)
 	require.Empty(t, idxUIDs)
+}
+
+func TestFlatInequalityTokens(t *testing.T) {
+	kv, cleanup := newTestFlatKV(t)
+	defer cleanup()
+
+	pstore = kv
+	Init(pstore)
+	schema.Init(kv)
+	x.WorkerConfig.UseFlatStorage = true
+	defer func() {
+		x.WorkerConfig.UseFlatStorage = false
+	}()
+
+	ctx := context.Background()
+	schema.State().Set("score", &pb.SchemaUpdate{
+		Predicate: "score",
+		ValueType: pb.Posting_INT,
+		Directive: pb.SchemaUpdate_INDEX,
+		Tokenizer: []string{"int"},
+	})
+
+	// 插入三条记录：score=10 (uid: 101), score=20 (uid: 102), score=30 (uid: 103)
+	txn := kv.NewTransactionAt(10, true)
+	for _, item := range []struct {
+		uid   uint64
+		score int64
+	}{
+		{101, 10},
+		{102, 20},
+		{103, 30},
+	} {
+		var valBytes [8]byte
+		binary.LittleEndian.PutUint64(valBytes[:], uint64(item.score))
+		require.NoError(t, ApplyFlatMutation(ctx, &pb.DirectedEdge{
+			Entity:    item.uid,
+			Attr:      "score",
+			Value:     valBytes[:],
+			ValueType: pb.Posting_INT,
+			Op:        pb.DirectedEdge_SET,
+		}, txn))
+	}
+	require.NoError(t, txn.CommitAt(10, nil))
+
+	// 测试 ge(score, 20)
+	{
+		toks, _, err := getInequalityTokens(ctx, 10, "score", "ge", "", []types.Val{
+			{Tid: types.IntID, Value: int64(20)},
+		})
+		require.NoError(t, err)
+		require.Len(t, toks, 2) // 20, 30
+		var matchedUIDs []uint64
+		readTxn := pstore.NewTransactionAt(10, false)
+		for _, tok := range toks {
+			uids, err := GlobalFlatEngine.ScanIndex(readTxn, 0, 0, flat.PredicateToAttrID("score"), []byte(tok))
+			require.NoError(t, err)
+			matchedUIDs = append(matchedUIDs, uids...)
+		}
+		readTxn.Discard()
+		require.ElementsMatch(t, []uint64{102, 103}, matchedUIDs)
+	}
+
+	// 测试 le(score, 20)
+	{
+		toks, _, err := getInequalityTokens(ctx, 10, "score", "le", "", []types.Val{
+			{Tid: types.IntID, Value: int64(20)},
+		})
+		require.NoError(t, err)
+		require.Len(t, toks, 2) // 20, 10
+		var matchedUIDs []uint64
+		readTxn := pstore.NewTransactionAt(10, false)
+		for _, tok := range toks {
+			uids, err := GlobalFlatEngine.ScanIndex(readTxn, 0, 0, flat.PredicateToAttrID("score"), []byte(tok))
+			require.NoError(t, err)
+			matchedUIDs = append(matchedUIDs, uids...)
+		}
+		readTxn.Discard()
+		require.ElementsMatch(t, []uint64{101, 102}, matchedUIDs)
+	}
+
+	// 测试 between(score, 15, 25)
+	{
+		toks, _, err := getInequalityTokens(ctx, 10, "score", "between", "", []types.Val{
+			{Tid: types.IntID, Value: int64(15)},
+			{Tid: types.IntID, Value: int64(25)},
+		})
+		require.NoError(t, err)
+		require.Len(t, toks, 1) // 20
+		readTxn := pstore.NewTransactionAt(10, false)
+		uids, err := GlobalFlatEngine.ScanIndex(readTxn, 0, 0, flat.PredicateToAttrID("score"), []byte(toks[0]))
+		require.NoError(t, err)
+		readTxn.Discard()
+		require.Equal(t, []uint64{102}, uids)
+	}
+
+	// 测试 gt(score, 20)
+	{
+		toks, _, err := getInequalityTokens(ctx, 10, "score", "gt", "", []types.Val{
+			{Tid: types.IntID, Value: int64(20)},
+		})
+		require.NoError(t, err)
+		require.Len(t, toks, 1) // 30
+		readTxn := pstore.NewTransactionAt(10, false)
+		uids, err := GlobalFlatEngine.ScanIndex(readTxn, 0, 0, flat.PredicateToAttrID("score"), []byte(toks[0]))
+		require.NoError(t, err)
+		readTxn.Discard()
+		require.Equal(t, []uint64{103}, uids)
+	}
+
+	// 测试 lt(score, 20)
+	{
+		toks, _, err := getInequalityTokens(ctx, 10, "score", "lt", "", []types.Val{
+			{Tid: types.IntID, Value: int64(20)},
+		})
+		require.NoError(t, err)
+		require.Len(t, toks, 1) // 10
+		readTxn := pstore.NewTransactionAt(10, false)
+		uids, err := GlobalFlatEngine.ScanIndex(readTxn, 0, 0, flat.PredicateToAttrID("score"), []byte(toks[0]))
+		require.NoError(t, err)
+		readTxn.Discard()
+		require.Equal(t, []uint64{101}, uids)
+	}
 }

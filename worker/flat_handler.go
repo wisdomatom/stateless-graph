@@ -14,6 +14,7 @@ import (
 	"github.com/wisdomatom/stateless-graph/schema"
 	"github.com/wisdomatom/stateless-graph/storage/flat"
 	"github.com/wisdomatom/stateless-graph/tok"
+	"github.com/wisdomatom/stateless-graph/tok/hnsw"
 	"github.com/wisdomatom/stateless-graph/types"
 	"github.com/wisdomatom/stateless-graph/x"
 )
@@ -235,6 +236,24 @@ func ApplyFlatMutation(ctx context.Context, edge *pb.DirectedEdge, txn x.KVTxn) 
 			if err := GlobalFlatEngine.SetData(txn, shardID, ns, attrID, edge.Entity, byte(edge.ValueType), edge.Value); err != nil {
 				return err
 			}
+			if schema.State().IsIndexed(ctx, edge.Attr) {
+				if schemaType, err := schema.State().TypeOf(edge.Attr); err == nil && schemaType == types.VFloatID {
+					if specs, err := schema.State().FactoryCreateSpec(ctx, edge.Attr); err == nil && len(specs) > 0 {
+						inVec := types.BytesAsFloatArray(edge.Value)
+						if indexer, err := specs[0].CreateIndex(edge.Attr); err == nil {
+							tc := hnsw.NewTxnCache(newFlatViTxn(txn, 0), 0)
+							if edges, err := indexer.Insert(ctx, tc, edge.Entity, inVec); err == nil {
+								for _, e := range edges {
+									ens, erawAttr := parseNamespaceSafe(e.Attr)
+									eattrID := flat.PredicateToAttrID(erawAttr)
+									eshardID := flat.CalculateShardID(e.Entity, 0)
+									_ = GlobalFlatEngine.SetData(txn, eshardID, ens, eattrID, e.Entity, 0, e.Value)
+								}
+							}
+						}
+					}
+				}
+			}
 		}
 	}
 
@@ -246,6 +265,10 @@ func FlatScanEdges(ctx context.Context, txn x.KVTxn, attr string, fromUID uint64
 	ns, rawAttr := parseNamespaceSafe(attr)
 	attrID := flat.PredicateToAttrID(rawAttr)
 	shardID := flat.CalculateShardID(fromUID, 0)
+
+	if opts.Intersect != nil && len(opts.Intersect.Uids) == 0 {
+		return &pb.List{}, nil, nil
+	}
 
 	it, err := GlobalFlatEngine.ScanOutEdges(txn, shardID, ns, attrID, fromUID)
 	if err != nil {
@@ -267,7 +290,7 @@ func FlatScanEdges(ctx context.Context, txn x.KVTxn, attr string, fromUID uint64
 		}
 
 		// 2. 内存求交 (如果上游带有 Intersect 过滤列表)
-		if opts.Intersect != nil && len(opts.Intersect.Uids) > 0 {
+		if opts.Intersect != nil {
 			if !containsUID(opts.Intersect.Uids, toUID) {
 				continue
 			}
@@ -308,6 +331,10 @@ func FlatScanReverseEdges(ctx context.Context, txn x.KVTxn, attr string, toUID u
 	attrID := flat.PredicateToAttrID(rawAttr)
 	shardID := flat.CalculateShardID(toUID, 0)
 
+	if opts.Intersect != nil && len(opts.Intersect.Uids) == 0 {
+		return &pb.List{}, nil
+	}
+
 	it, err := GlobalFlatEngine.ScanInEdges(txn, shardID, ns, attrID, toUID)
 	if err != nil {
 		return nil, err
@@ -322,7 +349,7 @@ func FlatScanReverseEdges(ctx context.Context, txn x.KVTxn, attr string, toUID u
 		if opts.AfterUid > 0 && fromUID <= opts.AfterUid {
 			continue
 		}
-		if opts.Intersect != nil && len(opts.Intersect.Uids) > 0 {
+		if opts.Intersect != nil {
 			if !containsUID(opts.Intersect.Uids, fromUID) {
 				continue
 			}

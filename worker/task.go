@@ -7,6 +7,7 @@ package worker
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"math"
 	"sort"
@@ -367,8 +368,14 @@ func (qs *queryState) handleValuePostings(ctx context.Context, args funcArgs) er
 			return err
 		}
 		//TODO: generate maxLevels from schema, filter, etc.
+		var viCache index.LocalCache
+		if x.WorkerConfig.UseFlatStorage {
+			viCache = newFlatViCache(args.q.ReadTs)
+		} else {
+			viCache = posting.NewViLocalCache(qs.cache)
+		}
 		qc := hnsw.NewQueryCache(
-			posting.NewViLocalCache(qs.cache),
+			viCache,
 			args.q.ReadTs,
 		)
 		indexer, err := cspec.CreateIndex(args.q.Attr)
@@ -486,6 +493,15 @@ func (qs *queryState) handleValuePostings(ctx context.Context, args funcArgs) er
 				shardID := flat.CalculateShardID(q.UidList.Uids[i], 0)
 				valTypes, valBytesList, err := GlobalFlatEngine.ScanData(readTxn, shardID, ns, attrID, q.UidList.Uids[i])
 				readTxn.Discard()
+				if q.DoCount {
+					cnt := uint32(0)
+					if err == nil {
+						cnt = uint32(len(valBytesList))
+					}
+					out.Counts = append(out.Counts, cnt)
+					out.UidMatrix = append(out.UidMatrix, &pb.List{})
+					continue
+				}
 				if err != nil || len(valBytesList) == 0 {
 					out.UidMatrix = append(out.UidMatrix, &pb.List{})
 					out.FacetMatrix = append(out.FacetMatrix, &pb.FacetsList{})
@@ -883,17 +899,73 @@ func (qs *queryState) handleUidPostings(
 						if err != nil {
 							return err
 						}
-						out.UidMatrix = append(out.UidMatrix, uidList)
+						if q.DoCount {
+							out.Counts = append(out.Counts, uint32(len(uidList.Uids)))
+							out.UidMatrix = append(out.UidMatrix, &pb.List{})
+						} else {
+							out.UidMatrix = append(out.UidMatrix, uidList)
+						}
 					} else {
-						uidList, facets, err := FlatScanEdges(ctx, readTxn, q.Attr, q.UidList.Uids[i], opts)
+						uidList, rawFacets, err := FlatScanEdges(ctx, readTxn, q.Attr, q.UidList.Uids[i], opts)
 						readTxn.Discard()
 						if err != nil {
 							return err
 						}
-						out.UidMatrix = append(out.UidMatrix, uidList)
-						if q.FacetParam != nil {
-							out.FacetMatrix = append(out.FacetMatrix, &pb.FacetsList{FacetsList: facets})
+						if facetsTree != nil {
+							var filteredUIDs []uint64
+							var filteredFacets []*pb.Facets
+							for idx, toUID := range uidList.Uids {
+								f := rawFacets[idx]
+								pick, err := applyFacetsTree(f.Facets, facetsTree)
+								if err != nil {
+									return err
+								}
+								if pick {
+									filteredUIDs = append(filteredUIDs, toUID)
+									filteredFacets = append(filteredFacets, f)
+								}
+							}
+							uidList.Uids = filteredUIDs
+							rawFacets = filteredFacets
 						}
+						if q.DoCount {
+							out.Counts = append(out.Counts, uint32(len(uidList.Uids)))
+							out.UidMatrix = append(out.UidMatrix, &pb.List{})
+						} else {
+							out.UidMatrix = append(out.UidMatrix, uidList)
+						}
+						if q.FacetParam != nil {
+							copiedFacets := make([]*pb.Facets, len(rawFacets))
+							for idx, f := range rawFacets {
+								copiedFacets[idx] = &pb.Facets{
+									Facets: facets.CopyFacets(f.Facets, q.FacetParam),
+								}
+							}
+							out.FacetMatrix = append(out.FacetMatrix, &pb.FacetsList{FacetsList: copiedFacets})
+						}
+					}
+					continue
+				} else if srcFn.fnType == uidInFn {
+					readTxn := pstore.NewTransactionAt(q.ReadTs, false)
+					topts := posting.ListOptions{
+						ReadTs:    args.q.ReadTs,
+						AfterUid:  0,
+						Intersect: &pb.List{Uids: srcFn.uidsPresent},
+						First:     1, // 只要找到 1 个交集就够了
+					}
+					var uidList *pb.List
+					var err error
+					if q.Reverse {
+						uidList, err = FlatScanReverseEdges(ctx, readTxn, q.Attr, q.UidList.Uids[i], topts)
+					} else {
+						uidList, _, err = FlatScanEdges(ctx, readTxn, q.Attr, q.UidList.Uids[i], topts)
+					}
+					readTxn.Discard()
+					if err != nil {
+						return err
+					}
+					if len(uidList.Uids) > 0 {
+						out.UidMatrix = append(out.UidMatrix, &pb.List{Uids: []uint64{q.UidList.Uids[i]}})
 					}
 					continue
 				} else if len(srcFn.tokens) > i {
@@ -905,7 +977,24 @@ func (qs *queryState) handleUidPostings(
 					if err != nil {
 						return err
 					}
-					out.UidMatrix = append(out.UidMatrix, &pb.List{Uids: uids})
+					filtered := uids
+					if opts.Intersect != nil {
+						if len(opts.Intersect.Uids) == 0 {
+							filtered = nil
+						} else {
+							filtered = algo.IntersectSorted([]*pb.List{{Uids: filtered}, opts.Intersect}).Uids
+						}
+					}
+					if opts.AfterUid > 0 && len(filtered) > 0 {
+						idx := sort.Search(len(filtered), func(k int) bool {
+							return filtered[k] > opts.AfterUid
+						})
+						filtered = filtered[idx:]
+					}
+					if opts.First > 0 && len(filtered) > opts.First {
+						filtered = filtered[:opts.First]
+					}
+					out.UidMatrix = append(out.UidMatrix, &pb.List{Uids: filtered})
 					continue
 				}
 			}
@@ -1385,22 +1474,7 @@ func (qs *queryState) handleRegexFunction(ctx context.Context, arg funcArgs) err
 			return ctx.Err()
 		default:
 		}
-		pl, err := qs.cache.Get(x.DataKey(attr, uid))
-		if err != nil {
-			return err
-		}
-
-		vals := make([]types.Val, 1)
-		switch {
-		case lang != "":
-			vals[0], err = pl.ValueForTag(arg.q.ReadTs, lang)
-
-		case isList:
-			vals, err = pl.AllUntaggedValues(arg.q.ReadTs)
-
-		default:
-			vals[0], err = pl.Value(arg.q.ReadTs)
-		}
+		vals, err := qs.getValsForUID(attr, lang, uid, arg.q.ReadTs)
 		if err != nil {
 			if err == posting.ErrNoValue {
 				continue
@@ -1472,6 +1546,20 @@ func (qs *queryState) handleCompareFunction(ctx context.Context, arg funcArgs) e
 
 		var filterErr error
 		algo.ApplyFilter(arg.out.UidMatrix[row], func(uid uint64, i int) bool {
+			if x.WorkerConfig.UseFlatStorage {
+				vals, err := qs.getValsForUID(attr, lang, uid, arg.q.ReadTs)
+				if err != nil {
+					return false
+				}
+				for _, val := range vals {
+					dst, err := types.Convert(val, typ)
+					if err == nil && compareFunc(dst) {
+						return true
+					}
+				}
+				return false
+			}
+
 			switch lang {
 			case "":
 				if isList {
@@ -1649,22 +1737,7 @@ func (qs *queryState) handleMatchFunction(ctx context.Context, arg funcArgs) err
 			return ctx.Err()
 		default:
 		}
-		pl, err := qs.cache.Get(x.DataKey(attr, uid))
-		if err != nil {
-			return err
-		}
-
-		vals := make([]types.Val, 1)
-		switch {
-		case lang != "":
-			vals[0], err = pl.ValueForTag(arg.q.ReadTs, lang)
-
-		case isList:
-			vals, err = pl.AllUntaggedValues(arg.q.ReadTs)
-
-		default:
-			vals[0], err = pl.Value(arg.q.ReadTs)
-		}
+		vals, err := qs.getValsForUID(attr, lang, uid, arg.q.ReadTs)
 		if err != nil {
 			if err == posting.ErrNoValue {
 				continue
@@ -1718,6 +1791,28 @@ func (qs *queryState) filterGeoFunction(ctx context.Context, arg funcArgs) error
 				default:
 				}
 			}
+			if x.WorkerConfig.UseFlatStorage {
+				vals, err := qs.getValsForUID(attr, "", uid, arg.q.ReadTs)
+				if err != nil {
+					continue
+				}
+				for _, val := range vals {
+					var rawBytes []byte
+					if b, ok := val.Value.([]byte); ok {
+						rawBytes = b
+					}
+					tv := pb.TaskValue{
+						ValType: pb.Posting_ValType(val.Tid),
+						Val:     rawBytes,
+					}
+					if types.MatchGeo(&tv, arg.srcFn.geoQuery) {
+						out.Uids = append(out.Uids, uid)
+						break
+					}
+				}
+				continue
+			}
+
 			pl, err := qs.cache.Get(x.DataKey(attr, uid))
 			if err != nil {
 				return err
@@ -1852,6 +1947,39 @@ func (qs *queryState) filterStringFunction(arg funcArgs) error {
 }
 
 func (qs *queryState) getValsForUID(attr, lang string, uid, ReadTs uint64) ([]types.Val, error) {
+	if x.WorkerConfig.UseFlatStorage {
+		readTxn := pstore.NewTransactionAt(ReadTs, false)
+		defer readTxn.Discard()
+		ns, rawAttr := parseNamespaceSafe(attr)
+		attrID := flat.PredicateToAttrID(rawAttr)
+		shardID := flat.CalculateShardID(uid, 0)
+		if schema.State().IsList(attr) {
+			valTypes, valBytesList, err := GlobalFlatEngine.ScanData(readTxn, shardID, ns, attrID, uid)
+			if err != nil {
+				return nil, err
+			}
+			if len(valBytesList) == 0 {
+				return nil, posting.ErrNoValue
+			}
+			vals := make([]types.Val, len(valBytesList))
+			for idx := range valBytesList {
+				vals[idx] = types.Val{
+					Tid:   types.TypeID(valTypes[idx]),
+					Value: valBytesList[idx],
+				}
+			}
+			return vals, nil
+		}
+		valType, valBytes, err := GlobalFlatEngine.GetData(readTxn, shardID, ns, attrID, uid)
+		if err != nil {
+			return nil, err
+		}
+		if len(valBytes) == 0 {
+			return nil, posting.ErrNoValue
+		}
+		return []types.Val{{Tid: types.TypeID(valType), Value: valBytes}}, nil
+	}
+
 	key := x.DataKey(attr, uid)
 	pl, err := qs.cache.Get(key)
 	if err != nil {
@@ -2777,6 +2905,72 @@ func (qs *queryState) handleHasFunction(ctx context.Context, q *pb.Query, out *p
 		if order != nil {
 			return qs.handleHasWithOrderFunction(ctx, q, out, order.Desc, int(q.Order.Offset), int(q.Order.Count), srcFn)
 		}
+	}
+
+	if x.WorkerConfig.UseFlatStorage {
+		readTxn := pstore.NewTransactionAt(q.ReadTs, false)
+		defer readTxn.Discard()
+
+		ns, rawAttr := parseNamespaceSafe(q.Attr)
+		attrID := flat.PredicateToAttrID(rawAttr)
+
+		keyType := byte(flat.KeyTypeData)
+		if sch, ok := schema.State().Get(ctx, q.Attr); ok && sch.ValueType == pb.Posting_UID {
+			if q.Reverse {
+				keyType = flat.KeyTypeReverse
+			} else {
+				keyType = flat.KeyTypeEdge
+			}
+		}
+
+		prefix := make([]byte, 11)
+		binary.BigEndian.PutUint16(prefix[0:2], 0) // ShardID = 0
+		binary.BigEndian.PutUint32(prefix[2:6], ns)
+		prefix[6] = keyType
+		binary.BigEndian.PutUint32(prefix[7:11], attrID)
+
+		seekKey := make([]byte, 11)
+		copy(seekKey, prefix)
+		if q.AfterUid > 0 {
+			seekKey = make([]byte, 19)
+			copy(seekKey, prefix)
+			binary.BigEndian.PutUint64(seekKey[11:19], q.AfterUid+1)
+		}
+
+		itOpt := x.KVIterOpts{
+			PrefetchValues: false,
+			IsReverse:      false,
+			Prefix:         prefix,
+		}
+		itr := readTxn.NewIterator(itOpt)
+		defer itr.Close()
+
+		result := &pb.List{}
+		cnt := int32(0)
+
+		for itr.Seek(seekKey); itr.Valid(); itr.Next() {
+			key := itr.Item().Key()
+			if len(key) < 19 {
+				continue
+			}
+			uid := binary.BigEndian.Uint64(key[11:19])
+			if len(result.Uids) > 0 && result.Uids[len(result.Uids)-1] == uid {
+				continue
+			}
+
+			if cnt < q.Offset {
+				cnt++
+				continue
+			}
+
+			result.Uids = append(result.Uids, uid)
+			if q.First > 0 && len(result.Uids) >= int(q.First) {
+				break
+			}
+		}
+
+		out.UidMatrix = append(out.UidMatrix, result)
+		return nil
 	}
 
 	initKey := x.ParsedKey{

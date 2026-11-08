@@ -8,10 +8,12 @@ package worker
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 
 	"github.com/pkg/errors"
 
 	"github.com/wisdomatom/stateless-graph/schema"
+	"github.com/wisdomatom/stateless-graph/storage/flat"
 	"github.com/wisdomatom/stateless-graph/tok"
 	"github.com/wisdomatom/stateless-graph/types"
 	"github.com/wisdomatom/stateless-graph/x"
@@ -192,13 +194,42 @@ func getInequalityTokens(ctx context.Context, readTs uint64, attr, f, lang strin
 	txn := pstore.NewTransactionAt(readTs, false)
 	defer txn.Discard()
 
-	seekKey := x.IndexKey(attr, ineqTokensFinal[0])
-
 	isgeOrGt := f == "ge" || f == "gt" || f == "between"
+
+	var seekKey []byte
+	var prefix []byte
+
+	if x.WorkerConfig.UseFlatStorage {
+		ns, rawAttr := x.ParseNamespaceSafe(attr)
+		attrID := flat.PredicateToAttrID(rawAttr)
+
+		// Prefix: 7B header + 4B attrID + 1B tokenizer.Identifier() = 12B
+		prefix = make([]byte, 12)
+		binary.BigEndian.PutUint16(prefix[0:2], 0) // ShardID = 0
+		binary.BigEndian.PutUint32(prefix[2:6], ns)
+		prefix[6] = flat.KeyTypeIndex
+		binary.BigEndian.PutUint32(prefix[7:11], attrID)
+		prefix[11] = tokenizer.Identifier()
+
+		seekKey = make([]byte, 11+len(ineqTokensFinal[0]))
+		binary.BigEndian.PutUint16(seekKey[0:2], 0)
+		binary.BigEndian.PutUint32(seekKey[2:6], ns)
+		seekKey[6] = flat.KeyTypeIndex
+		binary.BigEndian.PutUint32(seekKey[7:11], attrID)
+		copy(seekKey[11:], ineqTokensFinal[0])
+
+		if !isgeOrGt {
+			seekKey = append(seekKey, 0xFF)
+		}
+	} else {
+		prefix = x.IndexKey(attr, string(tokenizer.Identifier()))
+		seekKey = x.IndexKey(attr, ineqTokensFinal[0])
+	}
+
 	itOpt := x.KVIterOpts{
 		PrefetchValues: false,
 		IsReverse:      !isgeOrGt,
-		Prefix:         x.IndexKey(attr, string(tokenizer.Identifier())),
+		Prefix:         prefix,
 	}
 	itr := txn.NewIterator(itOpt)
 	defer itr.Close()
@@ -212,44 +243,61 @@ func getInequalityTokens(ctx context.Context, readTs uint64, attr, f, lang strin
 	}
 
 	var out []string
+	addTerm := func(term string) {
+		if len(out) == 0 || out[len(out)-1] != term {
+			out = append(out, term)
+		}
+	}
+
+	itr.Seek(seekKey)
 LOOP:
-	for itr.Seek(seekKey); itr.Valid(); itr.Next() {
+	for ; itr.Valid(); itr.Next() {
 		item := itr.Item()
 		key := item.Key()
-		k, err := x.Parse(key)
-		if err != nil {
-			return nil, nil, err
+
+		var term string
+		if x.WorkerConfig.UseFlatStorage {
+			if len(key) < 20 || key[len(key)-9] != 0x00 {
+				continue
+			}
+			term = string(key[11 : len(key)-9])
+		} else {
+			k, err := x.Parse(key)
+			if err != nil {
+				return nil, nil, err
+			}
+			term = k.Term
 		}
 
 		switch {
 		// if its lossy then we handle inequality comparison later
 		// in handleCompareFunction
 		case tokenizer.IsLossy():
-			if f == "between" && bytes.Compare([]byte(k.Term), ineqTokenInBytes2) > 0 {
+			if f == "between" && bytes.Compare([]byte(term), ineqTokenInBytes2) > 0 {
 				break LOOP
 			}
-			out = append(out, k.Term)
+			addTerm(term)
 
 		// for non Lossy lets compare for inequality (gt & lt)
 		// to see if key needs to be included
 		case f == "gt":
-			if bytes.Compare([]byte(k.Term), ineqTokenInBytes1) > 0 {
-				out = append(out, k.Term)
+			if bytes.Compare([]byte(term), ineqTokenInBytes1) > 0 {
+				addTerm(term)
 			}
 		case f == "lt":
-			if bytes.Compare([]byte(k.Term), ineqTokenInBytes1) < 0 {
-				out = append(out, k.Term)
+			if bytes.Compare([]byte(term), ineqTokenInBytes1) < 0 {
+				addTerm(term)
 			}
 		case f == "between":
-			if bytes.Compare([]byte(k.Term), ineqTokenInBytes1) >= 0 &&
-				bytes.Compare([]byte(k.Term), ineqTokenInBytes2) <= 0 {
-				out = append(out, k.Term)
+			if bytes.Compare([]byte(term), ineqTokenInBytes1) >= 0 &&
+				bytes.Compare([]byte(term), ineqTokenInBytes2) <= 0 {
+				addTerm(term)
 			} else { // We should break out of loop as soon as we are out of between range.
 				break LOOP
 			}
 		default:
 			// for le or ge or any other fn consider the key
-			out = append(out, k.Term)
+			addTerm(term)
 		}
 	}
 

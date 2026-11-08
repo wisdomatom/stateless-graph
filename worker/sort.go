@@ -22,6 +22,7 @@ import (
 	"github.com/wisdomatom/stateless-graph/posting"
 	"github.com/wisdomatom/stateless-graph/protos/pb"
 	"github.com/wisdomatom/stateless-graph/schema"
+	"github.com/wisdomatom/stateless-graph/storage/flat"
 	"github.com/wisdomatom/stateless-graph/tok"
 	"github.com/wisdomatom/stateless-graph/types"
 	"github.com/wisdomatom/stateless-graph/x"
@@ -529,6 +530,18 @@ func processSort(ctx context.Context, ts *pb.SortMessage) (*pb.SortResult, error
 	cctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	if x.WorkerConfig.UseFlatStorage {
+		r := sortWithoutIndex(cctx, ts)
+		if r.err != nil {
+			return nil, r.err
+		}
+		if len(ts.Order) <= 1 {
+			return r.reply, nil
+		}
+		err := multiSort(ctx, r, ts)
+		return r.reply, err
+	}
+
 	resCh := make(chan *sortresult, 2)
 	go func() {
 		select {
@@ -829,6 +842,27 @@ func sortByValue(ctx context.Context, ts *pb.SortMessage, ul *pb.List,
 // fetchValue gets the value for a given UID.
 func fetchValue(uid uint64, attr string, langs []string, scalar types.TypeID,
 	readTs uint64) (types.Val, error) {
+	if x.WorkerConfig.UseFlatStorage {
+		readTxn := pstore.NewTransactionAt(readTs, false)
+		defer readTxn.Discard()
+		ns, rawAttr := parseNamespaceSafe(attr)
+		attrID := flat.PredicateToAttrID(rawAttr)
+		shardID := flat.CalculateShardID(uid, 0)
+		valType, valBytes, err := GlobalFlatEngine.GetData(readTxn, shardID, ns, attrID, uid)
+		if err != nil {
+			return types.Val{}, err
+		}
+		if len(valBytes) == 0 {
+			return types.Val{}, posting.ErrNoValue
+		}
+		src := types.Val{Tid: types.TypeID(valType), Value: valBytes}
+		dst, err := types.Convert(src, scalar)
+		if err != nil {
+			return types.Val{}, err
+		}
+		return dst, nil
+	}
+
 	// Don't put the values in memory
 	pl, err := posting.GetNoStore(x.DataKey(attr, uid), readTs)
 	if err != nil {
