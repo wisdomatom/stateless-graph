@@ -9,7 +9,6 @@ import (
 	"github.com/dgraph-io/dgo/v250/protos/api"
 	"github.com/stretchr/testify/require"
 
-	"github.com/wisdomatom/stateless-graph/posting"
 	"github.com/wisdomatom/stateless-graph/protos/pb"
 	"github.com/wisdomatom/stateless-graph/schema"
 	"github.com/wisdomatom/stateless-graph/storage/flat"
@@ -87,7 +86,7 @@ func TestFlatMutationAndScan(t *testing.T) {
 	require.NoError(t, err)
 
 	// 4. 扫描出边 (user1 的朋友)
-	opts := posting.ListOptions{}
+	opts := ListOptions{}
 	res, facets, err := FlatScanEdges(ctx, txn, "friend", user1, opts)
 	require.NoError(t, err)
 	require.Equal(t, []uint64{user2, user3}, res.Uids)
@@ -101,7 +100,7 @@ func TestFlatMutationAndScan(t *testing.T) {
 	require.Equal(t, []uint64{user1}, revRes.Uids)
 
 	// 6. 测试分页截断: 只要 1 个好友
-	optsLimit := posting.ListOptions{First: 1}
+	optsLimit := ListOptions{First: 1}
 	resLimit, _, err := FlatScanEdges(ctx, txn, "friend", user1, optsLimit)
 	require.NoError(t, err)
 	require.Equal(t, []uint64{user2}, resLimit.Uids)

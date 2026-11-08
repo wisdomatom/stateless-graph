@@ -28,7 +28,6 @@ import (
 	bpb "github.com/dgraph-io/badger/v4/pb"
 	"github.com/dgraph-io/badger/v4/y"
 	"github.com/wisdomatom/stateless-graph/enc"
-	"github.com/wisdomatom/stateless-graph/posting"
 	"github.com/wisdomatom/stateless-graph/protos/pb"
 	"github.com/wisdomatom/stateless-graph/tok/hnsw"
 	"github.com/wisdomatom/stateless-graph/x"
@@ -165,7 +164,7 @@ func backupCurrentGroup(ctx context.Context, req *pb.BackupRequest) (*pb.BackupR
 			g.groupId(), req.GroupId)
 	}
 
-	if err := posting.Oracle().WaitForTs(ctx, req.ReadTs); err != nil {
+	if err := Oracle().WaitForTs(ctx, req.ReadTs); err != nil {
 		return nil, err
 	}
 
@@ -739,7 +738,7 @@ func (tl *threadLocal) toBackupList(key []byte, itr x.KVIterator) (
 
 	switch item.UserMeta() {
 	case x.BitEmptyPosting, x.BitCompletePosting, x.BitDeltaPosting:
-		l, err := posting.ReadPostingList(key, itr)
+		l, err := ReadPostingList(key, itr)
 		if err != nil {
 			return nil, nil, errors.Wrapf(err, "while reading posting list")
 		}
@@ -793,7 +792,7 @@ func writeKVList(list *bpb.KVList, w io.Writer) error {
 	return err
 }
 
-func checkAndGetDropOp(key []byte, l *posting.List, readTs uint64) (*pb.DropOperation, error) {
+func checkAndGetDropOp(key []byte, l *List, readTs uint64) (*pb.DropOperation, error) {
 	isDropOpKey, err := x.IsDropOpKey(key)
 	if err != nil || !isDropOpKey {
 		return nil, err

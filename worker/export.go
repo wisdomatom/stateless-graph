@@ -28,7 +28,6 @@ import (
 	bpb "github.com/dgraph-io/badger/v4/pb"
 	"github.com/dgraph-io/dgo/v250/protos/api"
 	"github.com/wisdomatom/stateless-graph/enc"
-	"github.com/wisdomatom/stateless-graph/posting"
 	"github.com/wisdomatom/stateless-graph/protos/pb"
 	"github.com/wisdomatom/stateless-graph/tok/hnsw"
 	"github.com/wisdomatom/stateless-graph/types"
@@ -60,7 +59,7 @@ var exportFormats = map[string]exportFormat{
 }
 
 type exporter struct {
-	pl        *posting.List
+	pl        *List
 	uid       uint64
 	attr      string
 	namespace uint64
@@ -594,7 +593,7 @@ func export(ctx context.Context, in *pb.ExportRequest) (ExportedFiles, error) {
 	glog.Infof("Export requested at %d for namespace %d.", in.ReadTs, in.Namespace)
 
 	// Let's wait for this server to catch up to all the updates until this ts.
-	if err := posting.Oracle().WaitForTs(ctx, in.ReadTs); err != nil {
+	if err := Oracle().WaitForTs(ctx, in.ReadTs); err != nil {
 		return nil, err
 	}
 	glog.Infof("Running export for group %d at timestamp %d.", in.GroupId, in.ReadTs)
@@ -602,7 +601,7 @@ func export(ctx context.Context, in *pb.ExportRequest) (ExportedFiles, error) {
 	return exportInternal(ctx, in, pstore, false)
 }
 
-func ToExportKvList(pk x.ParsedKey, pl *posting.List, in *pb.ExportRequest) (*bpb.KVList, error) {
+func ToExportKvList(pk x.ParsedKey, pl *List, in *pb.ExportRequest) (*bpb.KVList, error) {
 	e := &exporter{
 		readTs:    in.ReadTs,
 		uid:       pk.Uid,
@@ -837,7 +836,7 @@ func exportInternal(ctx context.Context, in *pb.ExportRequest, db x.KVDB,
 				hex.EncodeToString(item.Key()))
 			return nil, err
 		}
-		pl, err := posting.ReadPostingList(key, itr)
+		pl, err := ReadPostingList(key, itr)
 		if err != nil {
 			return nil, errors.Wrapf(err, "cannot read posting list")
 		}

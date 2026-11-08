@@ -24,7 +24,6 @@ import (
 	"github.com/dgraph-io/badger/v4"
 	badgerpb "github.com/dgraph-io/badger/v4/pb"
 	"github.com/wisdomatom/stateless-graph/conn"
-	"github.com/wisdomatom/stateless-graph/posting"
 	"github.com/wisdomatom/stateless-graph/protos/pb"
 	"github.com/wisdomatom/stateless-graph/x"
 )
@@ -156,8 +155,8 @@ func UpdateCacheMb(memoryMB int64) error {
 	blockCacheSize := (cachePercent[1] * (memoryMB << 20)) / 100
 	indexCacheSize := (cachePercent[2] * (memoryMB << 20)) / 100
 
-	if posting.MemLayerInstance != nil {
-		posting.MemLayerInstance.UpdateMaxCost(plCacheSize)
+	if MemLayerInstance != nil {
+		MemLayerInstance.UpdateMaxCost(plCacheSize)
 	}
 	if _, err := pstore.CacheMaxCost(badger.BlockCache, blockCacheSize); err != nil {
 		return errors.Wrapf(err, "cannot update block cache size")

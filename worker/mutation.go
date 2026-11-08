@@ -25,7 +25,6 @@ import (
 	"github.com/dgraph-io/badger/v4/y"
 	"github.com/dgraph-io/dgo/v250/protos/api"
 	"github.com/wisdomatom/stateless-graph/conn"
-	"github.com/wisdomatom/stateless-graph/posting"
 	"github.com/wisdomatom/stateless-graph/protos/pb"
 	"github.com/wisdomatom/stateless-graph/schema"
 	"github.com/wisdomatom/stateless-graph/storage/flat"
@@ -54,7 +53,7 @@ func isDeletePredicateEdge(edge *pb.DirectedEdge) bool {
 }
 
 // runMutation goes through all the edges and applies them.
-func runMutation(ctx context.Context, edge *pb.DirectedEdge, txn *posting.Txn) error {
+func runMutation(ctx context.Context, edge *pb.DirectedEdge, txn *Txn) error {
 	ctx = schema.GetWriteContext(ctx)
 
 	// We shouldn't check whether this Alpha serves this predicate or not. Membership information
@@ -63,7 +62,7 @@ func runMutation(ctx context.Context, edge *pb.DirectedEdge, txn *posting.Txn) e
 	if edge.Op != pb.DirectedEdge_DEL {
 		if !ok {
 			if !x.WorkerConfig.StrictMutations {
-				vType := posting.TypeID(edge)
+				vType := TypeID(edge)
 				if vType == 0 {
 					vType = types.DefaultID
 				}
@@ -113,7 +112,7 @@ func runMutation(ctx context.Context, edge *pb.DirectedEdge, txn *posting.Txn) e
 	}
 
 	key := x.DataKey(edge.Attr, edge.Entity)
-	var getFn func(key []byte) (*posting.List, error)
+	var getFn func(key []byte) (*List, error)
 	switch {
 	case len(edge.Lang) == 0 && !isList:
 		// Scalar Predicates, without lang
@@ -194,7 +193,7 @@ func runSchemaMutation(ctx context.Context, updates []*pb.SchemaUpdate, startTs 
 		}
 	}
 
-	buildIndexesHelper := func(update *pb.SchemaUpdate, rebuild posting.IndexRebuild) error {
+	buildIndexesHelper := func(update *pb.SchemaUpdate, rebuild IndexRebuild) error {
 		wrtCtx := schema.GetWriteContext(context.Background())
 		if err := rebuild.BuildIndexes(wrtCtx); err != nil {
 			return err
@@ -222,7 +221,7 @@ func runSchemaMutation(ctx context.Context, updates []*pb.SchemaUpdate, startTs 
 	}
 	throttle := y.NewThrottle(maxPredicateAtATime)
 
-	buildIndexes := func(update *pb.SchemaUpdate, rebuild posting.IndexRebuild, c *z.Closer) {
+	buildIndexes := func(update *pb.SchemaUpdate, rebuild IndexRebuild, c *z.Closer) {
 		// In case background indexing is running, we should call it here again.
 		defer stopIndexing(c)
 
@@ -254,7 +253,7 @@ func runSchemaMutation(ctx context.Context, updates []*pb.SchemaUpdate, startTs 
 		}
 
 		old, ok := schema.State().Get(ctx, su.Predicate)
-		rebuild := posting.IndexRebuild{
+		rebuild := IndexRebuild{
 			Attr:          su.Predicate,
 			StartTs:       startTs,
 			OldSchema:     &old,
@@ -393,7 +392,7 @@ func hasEdges(attr string, startTs uint64) bool {
 	for it.Rewind(); it.Valid(); it.Next() {
 		// NOTE: This is NOT correct.
 		// An incorrect, but efficient way to quickly check if we have at least one non-empty
-		// posting. This does NOT consider those posting lists which can have multiple deltas
+		//  This does NOT consider those posting lists which can have multiple deltas
 		// summing up to an empty posting list. I'm leaving it as it is for now. But, this could
 		// cause issues because of this inaccuracy.
 		if it.Item().UserMeta()&x.BitEmptyPosting == 0 {
@@ -543,7 +542,7 @@ func ValidateAndConvert(edge *pb.DirectedEdge, su *pb.SchemaUpdate) error {
 		return errors.Errorf("Not allowed to insert mutations in vector index keys, edge: [%v]", edge)
 	}
 
-	storageType := posting.TypeID(edge)
+	storageType := TypeID(edge)
 	schemaType := types.TypeID(su.ValueType)
 
 	// type checks
@@ -648,7 +647,7 @@ func Timestamps(ctx context.Context, num *pb.Num) (*pb.AssignedIds, error) {
 	// This might still be called by some components.
 	start := State.GetTimestamp(false)
 	// Update Oracle's MaxAssigned so queries don't wait for Zero.
-	posting.Oracle().SetMaxAssigned(start)
+	Oracle().SetMaxAssigned(start)
 	return &pb.AssignedIds{
 		StartId: start,
 		EndId:   start + num.Val - 1,
@@ -656,7 +655,7 @@ func Timestamps(ctx context.Context, num *pb.Num) (*pb.AssignedIds, error) {
 }
 
 func fillTxnContext(tctx *api.TxnContext, startTs uint64, isErrored bool) {
-	if txn := posting.Oracle().GetTxn(startTs); txn != nil {
+	if txn := Oracle().GetTxn(startTs); txn != nil {
 		txn.FillContext(tctx, groups().groupId(), isErrored)
 	}
 	// We do not need to fill linread mechanism anymore, because transaction
@@ -909,10 +908,10 @@ func applyMutations(ctx context.Context, m *pb.Mutations) error {
 			if err := detectPendingTxns(edge.Attr); err != nil {
 				return err
 			}
-			return posting.DeletePredicate(ctx, edge.Attr, m.StartTs)
+			return DeletePredicate(ctx, edge.Attr, m.StartTs)
 		}
 	}
-	txn := posting.Oracle().RegisterStartTs(m.StartTs)
+	txn := Oracle().RegisterStartTs(m.StartTs)
 	for _, edge := range m.Edges {
 		if err := runMutation(ctx, edge, txn); err != nil {
 			return err
@@ -943,7 +942,7 @@ func (w *grpcWorker) proposeAndWait(ctx context.Context, txnCtx *api.TxnContext,
 		}
 	}
 
-	if err := posting.Oracle().WaitForTs(ctx, m.StartTs); err != nil {
+	if err := Oracle().WaitForTs(ctx, m.StartTs); err != nil {
 		return err
 	}
 
@@ -960,7 +959,7 @@ func CommitOverNetwork(ctx context.Context, tc *api.TxnContext) (uint64, error) 
 	commitTs := State.GetTimestamp(false)
 
 	// Local commit logic: write deltas to disk and update cache
-	txn := posting.Oracle().GetTxn(tc.StartTs)
+	txn := Oracle().GetTxn(tc.StartTs)
 	if txn != nil {
 		if x.WorkerConfig.UseFlatStorage {
 			if txn.KVTxn != nil {
@@ -969,7 +968,7 @@ func CommitOverNetwork(ctx context.Context, tc *api.TxnContext) (uint64, error) 
 				}
 			}
 		} else {
-			writer := posting.NewTxnWriter(pstore)
+			writer := NewTxnWriter(pstore)
 			if err := txn.CommitToDisk(writer, commitTs); err != nil {
 				return 0, err
 			}
@@ -980,9 +979,9 @@ func CommitOverNetwork(ctx context.Context, tc *api.TxnContext) (uint64, error) 
 		}
 	}
 
-	posting.Oracle().SetMaxAssigned(commitTs)
+	Oracle().SetMaxAssigned(commitTs)
 	// Clear pending transaction in Oracle
-	posting.Oracle().ProcessDelta(&pb.OracleDelta{
+	Oracle().ProcessDelta(&pb.OracleDelta{
 		MaxAssigned: commitTs,
 		Txns: []*pb.TxnStatus{
 			{StartTs: tc.StartTs, CommitTs: commitTs},

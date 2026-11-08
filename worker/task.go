@@ -29,7 +29,6 @@ import (
 	"github.com/dgraph-io/dgo/v250/protos/api"
 	"github.com/wisdomatom/stateless-graph/algo"
 	"github.com/wisdomatom/stateless-graph/conn"
-	"github.com/wisdomatom/stateless-graph/posting"
 	"github.com/wisdomatom/stateless-graph/protos/pb"
 	"github.com/wisdomatom/stateless-graph/schema"
 	ctask "github.com/wisdomatom/stateless-graph/task"
@@ -372,7 +371,7 @@ func (qs *queryState) handleValuePostings(ctx context.Context, args funcArgs) er
 		if x.WorkerConfig.UseFlatStorage {
 			viCache = newFlatViCache(args.q.ReadTs)
 		} else {
-			viCache = posting.NewViLocalCache(qs.cache)
+			viCache = NewViLocalCache(qs.cache)
 		}
 		qc := hnsw.NewQueryCache(
 			viCache,
@@ -546,7 +545,7 @@ func (qs *queryState) handleValuePostings(ctx context.Context, args funcArgs) er
 				// If count is being requested, there is no need to populate value and facets matrix.
 				if q.DoCount {
 					count, err := countForValuePostings(args, pl, facetsTree, listType)
-					if err != nil && err != posting.ErrNoValue {
+					if err != nil && err != ErrNoValue {
 						return err
 					}
 					out.Counts = append(out.Counts, uint32(count))
@@ -558,7 +557,7 @@ func (qs *queryState) handleValuePostings(ctx context.Context, args funcArgs) er
 				vals, fcs, err = retrieveValuesAndFacets(args, pl, facetsTree, listType)
 
 				switch {
-				case err == posting.ErrNoValue || (err == nil && len(vals) == 0):
+				case err == ErrNoValue || (err == nil && len(vals) == 0):
 					// This branch is taken when the value does not exist in the pl or
 					// the number of values retrieved is zero (there could still be facets).
 					// We add empty lists to the UidMatrix, FaceMatrix, ValueMatrix and
@@ -683,7 +682,7 @@ func (qs *queryState) handleValuePostings(ctx context.Context, args funcArgs) er
 	return nil
 }
 
-func facetsFilterValuePostingList(args funcArgs, pl *posting.List, facetsTree *facetsTree,
+func facetsFilterValuePostingList(args funcArgs, pl *List, facetsTree *facetsTree,
 	listType bool, fn func(p *pb.Posting)) error {
 	q := args.q
 
@@ -698,7 +697,7 @@ func facetsFilterValuePostingList(args funcArgs, pl *posting.List, facetsTree *f
 	if !pickMultiplePostings {
 		// Retrieve the posting that matches the language preferences.
 		langMatch, err = pl.PostingFor(q.ReadTs, q.Langs)
-		if err != nil && err != posting.ErrNoValue {
+		if err != nil && err != ErrNoValue {
 			return err
 		}
 	}
@@ -735,11 +734,11 @@ func facetsFilterValuePostingList(args funcArgs, pl *posting.List, facetsTree *f
 		}
 
 		// We have picked the right posting, we can stop iteration now.
-		return posting.ErrStopIteration
+		return ErrStopIteration
 	})
 }
 
-func countForValuePostings(args funcArgs, pl *posting.List, facetsTree *facetsTree,
+func countForValuePostings(args funcArgs, pl *List, facetsTree *facetsTree,
 	listType bool) (int, error) {
 	var filteredCount int
 	err := facetsFilterValuePostingList(args, pl, facetsTree, listType, func(p *pb.Posting) {
@@ -752,7 +751,7 @@ func countForValuePostings(args funcArgs, pl *posting.List, facetsTree *facetsTr
 	return filteredCount, nil
 }
 
-func retrieveValuesAndFacets(args funcArgs, pl *posting.List, facetsTree *facetsTree,
+func retrieveValuesAndFacets(args funcArgs, pl *List, facetsTree *facetsTree,
 	listType bool) ([]types.Val, *pb.FacetsList, error) {
 	q := args.q
 	var vals []types.Val
@@ -774,7 +773,7 @@ func retrieveValuesAndFacets(args funcArgs, pl *posting.List, facetsTree *facets
 	return vals, &pb.FacetsList{FacetsList: fcs}, nil
 }
 
-func facetsFilterUidPostingList(pl *posting.List, facetsTree *facetsTree, opts posting.ListOptions,
+func facetsFilterUidPostingList(pl *List, facetsTree *facetsTree, opts ListOptions,
 	fn func(*pb.Posting)) error {
 
 	return pl.Postings(opts, func(p *pb.Posting) error {
@@ -790,8 +789,8 @@ func facetsFilterUidPostingList(pl *posting.List, facetsTree *facetsTree, opts p
 	})
 }
 
-func countForUidPostings(args funcArgs, pl *posting.List, facetsTree *facetsTree,
-	opts posting.ListOptions) (int, error) {
+func countForUidPostings(args funcArgs, pl *List, facetsTree *facetsTree,
+	opts ListOptions) (int, error) {
 
 	var filteredCount int
 	err := facetsFilterUidPostingList(pl, facetsTree, opts, func(p *pb.Posting) {
@@ -804,8 +803,8 @@ func countForUidPostings(args funcArgs, pl *posting.List, facetsTree *facetsTree
 	return filteredCount, nil
 }
 
-func retrieveUidsAndFacets(args funcArgs, pl *posting.List, facetsTree *facetsTree,
-	opts posting.ListOptions) (*pb.List, []*pb.Facets, error) {
+func retrieveUidsAndFacets(args funcArgs, pl *List, facetsTree *facetsTree,
+	opts ListOptions) (*pb.List, []*pb.Facets, error) {
 	q := args.q
 
 	var fcsList []*pb.Facets
@@ -831,7 +830,7 @@ func retrieveUidsAndFacets(args funcArgs, pl *posting.List, facetsTree *facetsTr
 // This function handles operations on uid posting lists. Index keys, reverse keys and some data
 // keys store uid posting lists.
 func (qs *queryState) handleUidPostings(
-	ctx context.Context, args funcArgs, opts posting.ListOptions) error {
+	ctx context.Context, args funcArgs, opts ListOptions) error {
 	srcFn := args.srcFn
 	q := args.q
 
@@ -947,7 +946,7 @@ func (qs *queryState) handleUidPostings(
 					continue
 				} else if srcFn.fnType == uidInFn {
 					readTxn := pstore.NewTransactionAt(q.ReadTs, false)
-					topts := posting.ListOptions{
+					topts := ListOptions{
 						ReadTs:    args.q.ReadTs,
 						AfterUid:  0,
 						Intersect: &pb.List{Uids: srcFn.uidsPresent},
@@ -1021,7 +1020,7 @@ func (qs *queryState) handleUidPostings(
 			}
 
 			if srcFn.fnType == compareAttrFn {
-				posting.GetStatsHolder().InsertRecord(
+				GetStatsHolder().InsertRecord(
 					q.Attr, []byte(srcFn.tokens[i]), uint64(pl.ApproxLen()))
 			}
 
@@ -1043,7 +1042,7 @@ func (qs *queryState) handleUidPostings(
 				}
 				len := pl.Length(args.q.ReadTs, 0)
 				if len == -1 {
-					return errors.Wrapf(posting.ErrTsTooOld, "While reading posting list length")
+					return errors.Wrapf(ErrTsTooOld, "While reading posting list length")
 				}
 				count := int64(len)
 				if evalCompare(srcFn.fname, count, srcFn.threshold[0]) {
@@ -1075,7 +1074,7 @@ func (qs *queryState) handleUidPostings(
 						_, err = pl.ValueForTag(args.q.ReadTs, lang)
 					}
 
-					if err == posting.ErrNoValue {
+					if err == ErrNoValue {
 						empty = true
 						err = nil
 					}
@@ -1092,7 +1091,7 @@ func (qs *queryState) handleUidPostings(
 					span.AddEvent("UidInFn")
 				}
 				reqList := &pb.List{Uids: srcFn.uidsPresent}
-				topts := posting.ListOptions{
+				topts := ListOptions{
 					ReadTs:    args.q.ReadTs,
 					AfterUid:  0,
 					Intersect: reqList,
@@ -1181,10 +1180,10 @@ func processTask(ctx context.Context, q *pb.Query, gid uint32) (*pb.Result, erro
 		attribute.String("startTs", fmt.Sprintf("%d", q.ReadTs)),
 		attribute.String("node", fmt.Sprintf("%d", groups().Node.Id)),
 		attribute.String("gid", fmt.Sprintf("%d", gid)))
-	if err := posting.Oracle().WaitForTs(ctx, q.ReadTs); err != nil {
+	if err := Oracle().WaitForTs(ctx, q.ReadTs); err != nil {
 		return nil, err
 	}
-	maxAssigned := posting.Oracle().MaxAssigned()
+	maxAssigned := Oracle().MaxAssigned()
 	span.AddEvent("Done waiting for maxAssigned", trace.WithAttributes(
 		attribute.String("attr", q.Attr),
 		attribute.String("readTs", fmt.Sprintf("%d", q.ReadTs)),
@@ -1212,10 +1211,10 @@ func processTask(ctx context.Context, q *pb.Query, gid uint32) (*pb.Result, erro
 
 	var qs queryState
 	if q.Cache == UseTxnCache {
-		qs.cache = posting.Oracle().CacheAt(q.ReadTs)
+		qs.cache = Oracle().CacheAt(q.ReadTs)
 	}
 	if qs.cache == nil {
-		qs.cache = posting.NoCache(q.ReadTs)
+		qs.cache = NoCacheAt(q.ReadTs)
 	}
 	// For now, remove the query level cache. It is causing contention for queries with high
 	// fan-out.
@@ -1227,7 +1226,7 @@ func processTask(ctx context.Context, q *pb.Query, gid uint32) (*pb.Result, erro
 }
 
 type queryState struct {
-	cache *posting.LocalCache
+	cache *LocalCache
 }
 
 func (qs *queryState) helpProcessTask(ctx context.Context, q *pb.Query, gid uint32) (
@@ -1277,7 +1276,7 @@ func (qs *queryState) helpProcessTask(ctx context.Context, q *pb.Query, gid uint
 		out.List = true
 	}
 
-	opts := posting.ListOptions{
+	opts := ListOptions{
 		ReadTs:   q.ReadTs,
 		AfterUid: q.AfterUid,
 		First:    int(q.First + q.Offset),
@@ -1476,7 +1475,7 @@ func (qs *queryState) handleRegexFunction(ctx context.Context, arg funcArgs) err
 		}
 		vals, err := qs.getValsForUID(attr, lang, uid, arg.q.ReadTs)
 		if err != nil {
-			if err == posting.ErrNoValue {
+			if err == ErrNoValue {
 				continue
 			}
 			return err
@@ -1570,7 +1569,7 @@ func (qs *queryState) handleCompareFunction(ctx context.Context, arg funcArgs) e
 					}
 					svs, err := pl.AllUntaggedValues(arg.q.ReadTs)
 					if err != nil {
-						if err != posting.ErrNoValue {
+						if err != ErrNoValue {
 							filterErr = err
 						}
 						return false
@@ -1592,7 +1591,7 @@ func (qs *queryState) handleCompareFunction(ctx context.Context, arg funcArgs) e
 				}
 				sv, err := pl.Value(arg.q.ReadTs)
 				if err != nil {
-					if err != posting.ErrNoValue {
+					if err != ErrNoValue {
 						filterErr = err
 					}
 					return false
@@ -1625,7 +1624,7 @@ func (qs *queryState) handleCompareFunction(ctx context.Context, arg funcArgs) e
 				}
 				src, err := pl.ValueFor(arg.q.ReadTs, arg.q.Langs)
 				if err != nil {
-					if err != posting.ErrNoValue {
+					if err != ErrNoValue {
 						filterErr = err
 					}
 					return false
@@ -1739,7 +1738,7 @@ func (qs *queryState) handleMatchFunction(ctx context.Context, arg funcArgs) err
 		}
 		vals, err := qs.getValsForUID(attr, lang, uid, arg.q.ReadTs)
 		if err != nil {
-			if err == posting.ErrNoValue {
+			if err == ErrNoValue {
 				continue
 			}
 			return err
@@ -1823,7 +1822,7 @@ func (qs *queryState) filterGeoFunction(ctx context.Context, arg funcArgs) error
 				tv.Val = p.Value
 				if types.MatchGeo(&tv, arg.srcFn.geoQuery) {
 					out.Uids = append(out.Uids, uid)
-					return posting.ErrStopIteration
+					return ErrStopIteration
 				}
 				return nil
 			})
@@ -1881,7 +1880,7 @@ func (qs *queryState) filterStringFunction(arg funcArgs) error {
 	for _, uid := range uids.Uids {
 		vals, err := qs.getValsForUID(attr, lang, uid, arg.q.ReadTs)
 		switch {
-		case err == posting.ErrNoValue:
+		case err == ErrNoValue:
 			continue
 		case err != nil:
 			return err
@@ -1959,7 +1958,7 @@ func (qs *queryState) getValsForUID(attr, lang string, uid, ReadTs uint64) ([]ty
 				return nil, err
 			}
 			if len(valBytesList) == 0 {
-				return nil, posting.ErrNoValue
+				return nil, ErrNoValue
 			}
 			vals := make([]types.Val, len(valBytesList))
 			for idx := range valBytesList {
@@ -1975,7 +1974,7 @@ func (qs *queryState) getValsForUID(attr, lang string, uid, ReadTs uint64) ([]ty
 			return nil, err
 		}
 		if len(valBytes) == 0 {
-			return nil, posting.ErrNoValue
+			return nil, ErrNoValue
 		}
 		return []types.Val{{Tid: types.TypeID(valType), Value: valBytes}}, nil
 	}
@@ -2095,7 +2094,7 @@ func planForEqFilter(fc *functionContext, pred string, uidlist []uint64) {
 	estimatedCount := uint64(0)
 	gotEstimate := false
 	for _, eqToken := range fc.tokens {
-		count := posting.GetStatsHolder().ProcessEqPredicate(pred, []byte(eqToken))
+		count := GetStatsHolder().ProcessEqPredicate(pred, []byte(eqToken))
 		if count != math.MaxUint64 && count != 0 {
 			estimatedCount += count
 			gotEstimate = true
@@ -2738,7 +2737,7 @@ func (qs *queryState) evaluate(cp countParams, out *pb.Result) error {
 		if err != nil {
 			return err
 		}
-		uids, err := pl.Uids(posting.ListOptions{ReadTs: cp.readTs})
+		uids, err := pl.Uids(ListOptions{ReadTs: cp.readTs})
 		if err != nil {
 			return err
 		}
@@ -2785,7 +2784,7 @@ func (qs *queryState) evaluate(cp countParams, out *pb.Result) error {
 		if err != nil {
 			return err
 		}
-		uids, err := pl.Uids(posting.ListOptions{ReadTs: cp.readTs})
+		uids, err := pl.Uids(ListOptions{ReadTs: cp.readTs})
 		if err != nil {
 			return err
 		}
@@ -2830,7 +2829,7 @@ func (qs *queryState) handleHasWithOrderFunction(ctx context.Context, q *pb.Quer
 
 	cnt := int32(0)
 
-	iteratorFunc := &posting.IterateDiskArgs{
+	iteratorFunc := &IterateDiskArgs{
 		Prefix:      prefix,
 		ReadTs:      q.ReadTs,
 		AllVersions: false,
@@ -2838,8 +2837,8 @@ func (qs *queryState) handleHasWithOrderFunction(ctx context.Context, q *pb.Quer
 		CheckInclusion: func(uid uint64) error {
 			return nil
 		},
-		Function: func(l *posting.List, pk x.ParsedKey) error {
-			pl, err := l.Uids(posting.ListOptions{ReadTs: q.ReadTs})
+		Function: func(l *List, pk x.ParsedKey) error {
+			pl, err := l.Uids(ListOptions{ReadTs: q.ReadTs})
 			if err != nil {
 				return err
 			}
@@ -2859,14 +2858,14 @@ func (qs *queryState) handleHasWithOrderFunction(ctx context.Context, q *pb.Quer
 			// We'll stop fetching if we fetch the required count. We have to read all the uids in an index
 			// to return correct result for first.
 			if len(result.Uids) >= int(q.First) || len(result.Uids) >= (first+offset) {
-				return posting.ErrStopIteration
+				return ErrStopIteration
 			}
 			return nil
 		},
 		StartKey: startKey,
 	}
 
-	if err := posting.MemLayerInstance.IterateDisk(ctx, *iteratorFunc); err != nil {
+	if err := MemLayerInstance.IterateDisk(ctx, *iteratorFunc); err != nil {
 		return err
 	}
 	sort.Slice(result.Uids, func(i, j int) bool {
@@ -3004,13 +3003,13 @@ func (qs *queryState) handleHasFunction(ctx context.Context, q *pb.Query, out *p
 
 	cnt := int32(0)
 
-	iteratorFunc := &posting.IterateDiskArgs{
+	iteratorFunc := &IterateDiskArgs{
 		Prefix:         prefix,
 		ReadTs:         q.ReadTs,
 		Reverse:        false,
 		AllVersions:    true,
 		CheckInclusion: checkInclusion,
-		Function: func(l *posting.List, pk x.ParsedKey) error {
+		Function: func(l *List, pk x.ParsedKey) error {
 			if cnt < q.Offset {
 				cnt++
 				return nil
@@ -3019,14 +3018,14 @@ func (qs *queryState) handleHasFunction(ctx context.Context, q *pb.Query, out *p
 
 			// We'll stop fetching if we fetch the required count.
 			if len(result.Uids) >= int(q.First) {
-				return posting.ErrStopIteration
+				return ErrStopIteration
 			}
 			return nil
 		},
 		StartKey: startKey,
 	}
 
-	if err := posting.MemLayerInstance.IterateDisk(ctx, *iteratorFunc); err != nil {
+	if err := MemLayerInstance.IterateDisk(ctx, *iteratorFunc); err != nil {
 		return err
 	}
 	span.AddEvent("handleHasFunction result", trace.WithAttributes(

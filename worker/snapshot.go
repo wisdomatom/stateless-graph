@@ -17,7 +17,6 @@ import (
 
 	"github.com/dgraph-io/badger/v4"
 	"github.com/wisdomatom/stateless-graph/conn"
-	"github.com/wisdomatom/stateless-graph/posting"
 	"github.com/wisdomatom/stateless-graph/protos/pb"
 	"github.com/wisdomatom/stateless-graph/schema"
 	"github.com/wisdomatom/stateless-graph/x"
@@ -115,7 +114,7 @@ func (n *node) populateSnapshot(snap *pb.Snapshot, pl *conn.Pool) error {
 		return err
 	}
 	// Reset the cache after having received a snapshot.
-	posting.ResetCache()
+	ResetCache()
 
 	glog.Infof("Snapshot writes DONE. Sending ACK")
 	// Send an acknowledgement back to the leader.
@@ -148,7 +147,7 @@ func deleteStalePreds(ctx context.Context, kvs *pb.KVS, ts uint64) error {
 				// While retrieving the snapshot, we mark the node as unhealthy. So it is better to
 				// a blocking delete of predicate as we know that no new writes will arrive at
 				// this alpha.
-				err := posting.DeletePredicate(ctx, pred, ts)
+				err := DeletePredicate(ctx, pred, ts)
 				switch err {
 				case badger.ErrBlockedWrites:
 					time.Sleep(1 * time.Second)
@@ -203,7 +202,7 @@ func doStreamSnapshot(snap *pb.Snapshot, out pb.Worker_StreamSnapshotServer) err
 	// request. Any other node in the group should have the same data as the leader, once it is past
 	// the read timestamp.
 	glog.Infof("Waiting to reach timestamp: %d", snap.ReadTs)
-	if err := posting.Oracle().WaitForTs(out.Context(), snap.ReadTs); err != nil {
+	if err := Oracle().WaitForTs(out.Context(), snap.ReadTs); err != nil {
 		return err
 	}
 

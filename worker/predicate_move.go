@@ -23,7 +23,6 @@ import (
 	"github.com/dgraph-io/badger/v4"
 	bpb "github.com/dgraph-io/badger/v4/pb"
 	"github.com/dgraph-io/dgo/v250/protos/api"
-	"github.com/wisdomatom/stateless-graph/posting"
 	"github.com/wisdomatom/stateless-graph/protos/pb"
 	"github.com/wisdomatom/stateless-graph/schema"
 	"github.com/wisdomatom/stateless-graph/tok/hnsw"
@@ -43,7 +42,7 @@ func populateKeyValues(ctx context.Context, kvs []*bpb.KV) error {
 	if len(kvs) == 0 {
 		return nil
 	}
-	writer := posting.NewTxnWriter(pstore)
+	writer := NewTxnWriter(pstore)
 	if err := writer.Write(&bpb.KVList{Kv: kvs}); err != nil {
 		return err
 	}
@@ -229,7 +228,7 @@ func (w *grpcWorker) MovePredicate(ctx context.Context,
 		return &emptyPayload, nil
 	}
 
-	if err := posting.Oracle().WaitForTs(ctx, in.TxnTs); err != nil {
+	if err := Oracle().WaitForTs(ctx, in.TxnTs); err != nil {
 		return &emptyPayload, errors.Errorf("While waiting for txn ts: %d. Error: %v", in.TxnTs, err)
 	}
 
@@ -324,7 +323,7 @@ func movePredicateHelper(ctx context.Context, in *pb.MovePredicatePayload) error
 		// For now, just send out full posting lists, because we use delete markers to delete older
 		// data in the prefix range. So, by sending only one version per key, and writing it at a
 		// provided timestamp, we can ensure that these writes are above all the delete markers.
-		l, err := posting.ReadPostingList(key, itr)
+		l, err := ReadPostingList(key, itr)
 		if err != nil {
 			return nil, err
 		}

@@ -38,7 +38,6 @@ import (
 	"github.com/dgraph-io/dgo/v250/protos/api"
 	"github.com/wisdomatom/stateless-graph/audit"
 	"github.com/wisdomatom/stateless-graph/edgraph"
-	"github.com/wisdomatom/stateless-graph/posting"
 	"github.com/wisdomatom/stateless-graph/schema"
 	"github.com/wisdomatom/stateless-graph/tok"
 	"github.com/wisdomatom/stateless-graph/worker"
@@ -598,7 +597,6 @@ func run() {
 	removeOnUpdate := cache.GetBool("remove-on-update")
 	cachePercent, err := x.GetCachePercentages(cachePercentage, 3)
 	x.Check(err)
-	postingListCacheSize := (cachePercent[0] * (totalCache << 20)) / 100
 	pstoreBlockCacheSize := (cachePercent[1] * (totalCache << 20)) / 100
 	pstoreIndexCacheSize := (cachePercent[2] * (totalCache << 20)) / 100
 
@@ -741,12 +739,10 @@ func run() {
 		}
 	}
 
-	// Posting will initialize index which requires schema. Hence, initialize
-	// schema before calling posting.Init().
+	// Posting will initialize index which requires schema.
 	schema.Init(worker.State.Pstore)
-	posting.Init(worker.State.Pstore, postingListCacheSize, removeOnUpdate)
-	posting.SetEnabledDetailedMetrics(enableDetailedMetrics)
-	defer posting.Cleanup()
+	worker.SetEnabledDetailedMetrics(enableDetailedMetrics)
+	defer worker.Cleanup()
 
 	worker.Init(worker.State.Pstore)
 

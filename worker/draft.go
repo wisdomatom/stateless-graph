@@ -33,7 +33,6 @@ import (
 	"github.com/dgraph-io/badger/v4"
 	bpb "github.com/dgraph-io/badger/v4/pb"
 	"github.com/wisdomatom/stateless-graph/conn"
-	"github.com/wisdomatom/stateless-graph/posting"
 	"github.com/wisdomatom/stateless-graph/protos/pb"
 	"github.com/wisdomatom/stateless-graph/raftwal"
 	"github.com/wisdomatom/stateless-graph/schema"
@@ -138,7 +137,7 @@ func (n *node) startTaskAtTs(id op, ts uint64) (*z.Closer, error) {
 		if len(n.ops) > 0 {
 			return nil, errors.Errorf("another operation is already running")
 		}
-		go posting.IncrRollup.Process(closer, State.GetTimestamp)
+		go IncrRollup.Process(closer, State.GetTimestamp)
 	case opRestore:
 		// Restores cancel all other operations, except for other restores since
 		// only one restore operation should be active any given moment.
@@ -313,7 +312,7 @@ var errHasPendingTxns = errors.New("Pending transactions found. Please retry ope
 // transactions. We're now applying all updates serially, so blocking for one
 // operation is not an option.
 func detectPendingTxns(attr string) error {
-	tctxs := posting.Oracle().IterateTxns(func(key []byte) bool {
+	tctxs := Oracle().IterateTxns(func(key []byte) bool {
 		pk, err := x.Parse(key)
 		if err != nil {
 			glog.Errorf("error %v while parsing key %v", err, hex.EncodeToString(key))
@@ -340,8 +339,8 @@ func (n *node) applyMutations(ctx context.Context, proposal *pb.Proposal) (rerr 
 			return err
 		}
 		// Ensures nothing get written to disk due to commit proposals.
-		posting.Oracle().ResetTxnsForNs(ns)
-		if err := posting.DeleteAllForNs(ns); err != nil {
+		Oracle().ResetTxnsForNs(ns)
+		if err := DeleteAllForNs(ns); err != nil {
 			return err
 		}
 
@@ -366,7 +365,7 @@ func (n *node) applyMutations(ctx context.Context, proposal *pb.Proposal) (rerr 
 
 		// TODO: Revisit this when we work on posting cache. Don't clear entire cache.
 		// We don't want to drop entire cache, just due to one namespace.
-		posting.ResetCache()
+		ResetCache()
 		return nil
 	}
 
@@ -376,28 +375,28 @@ func (n *node) applyMutations(ctx context.Context, proposal *pb.Proposal) (rerr 
 			return err
 		}
 		// Ensures nothing get written to disk due to commit proposals.
-		posting.Oracle().ResetTxnsForNs(ns)
-		if err := posting.DeleteData(ns); err != nil {
+		Oracle().ResetTxnsForNs(ns)
+		if err := DeleteData(ns); err != nil {
 			return err
 		}
 
 		// TODO: Revisit this when we work on posting cache. Don't clear entire cache.
 		// We don't want to drop entire cache, just due to one namespace.
-		posting.ResetCache()
+		ResetCache()
 		return nil
 	}
 
 	if proposal.Mutations.DropOp == pb.Mutations_ALL {
 		// Ensures nothing get written to disk due to commit proposals.
-		posting.Oracle().ResetTxns()
+		Oracle().ResetTxns()
 		schema.State().DeleteAll()
 
-		if err := posting.DeleteAll(); err != nil {
+		if err := DeleteAll(); err != nil {
 			return err
 		}
 
 		// Clear entire cache.
-		posting.ResetCache()
+		ResetCache()
 
 		// It should be okay to set the schema at timestamp 1 after drop all operation.
 		if groups().groupId() == 1 {
@@ -432,7 +431,7 @@ func (n *node) applyMutations(ctx context.Context, proposal *pb.Proposal) (rerr 
 		// MaxAssigned would ensure that everything that's committed up until this point
 		// would be picked up in building indexes. Any uncommitted txns would be cancelled
 		// by detectPendingTxns below.
-		startTs := posting.Oracle().MaxAssigned()
+		startTs := Oracle().MaxAssigned()
 
 		span.AddEvent("Applying schema and types")
 		for _, supdate := range proposal.Mutations.Schema {
@@ -449,7 +448,7 @@ func (n *node) applyMutations(ctx context.Context, proposal *pb.Proposal) (rerr 
 		// Clear the entire cache if there is a schema update because the index rebuild
 		// will invalidate the state.
 		if len(proposal.Mutations.Schema) > 0 {
-			posting.ResetCache()
+			ResetCache()
 		}
 
 		for _, tupdate := range proposal.Mutations.Types {
@@ -478,14 +477,14 @@ func (n *node) applyMutations(ctx context.Context, proposal *pb.Proposal) (rerr 
 				return err
 			}
 			span.AddEvent("Deleting predicate")
-			return posting.DeletePredicate(ctx, edge.Attr, proposal.StartTs)
+			return DeletePredicate(ctx, edge.Attr, proposal.StartTs)
 		}
 		// Don't derive schema when doing deletion.
 		if edge.Op == pb.DirectedEdge_DEL {
 			continue
 		}
 		if _, ok := schemaMap[edge.Attr]; !ok {
-			schemaMap[edge.Attr] = posting.TypeID(edge)
+			schemaMap[edge.Attr] = TypeID(edge)
 		}
 	}
 
@@ -528,7 +527,7 @@ func (n *node) applyMutations(ctx context.Context, proposal *pb.Proposal) (rerr 
 		return ei.GetEntity() < ej.GetEntity()
 	})
 
-	txn := posting.Oracle().RegisterStartTs(m.StartTs)
+	txn := Oracle().RegisterStartTs(m.StartTs)
 	if txn.ShouldAbort() {
 		span.AddEvent("Txn should abort.", trace.WithAttributes(
 			attribute.Int64("start_ts", int64(m.StartTs)),
@@ -546,7 +545,7 @@ func (n *node) applyMutations(ctx context.Context, proposal *pb.Proposal) (rerr 
 				if err == nil {
 					break
 				}
-				if err != posting.ErrRetry {
+				if err != ErrRetry {
 					return err
 				}
 				retries++
@@ -674,7 +673,7 @@ func (n *node) applyCommitted(proposal *pb.Proposal, key uint64) error {
 				proposal.CleanPredicate, proposal.ExpectedChecksum)
 			return nil
 		}
-		err := posting.DeletePredicate(ctx, proposal.CleanPredicate, proposal.StartTs)
+		err := DeletePredicate(ctx, proposal.CleanPredicate, proposal.StartTs)
 		if err == badger.ErrBannedKey {
 			// Zero might send the delete predicate instruction to alpha when updating the
 			// membership state. This can happen for predicates from banned namespaces too.
@@ -717,7 +716,7 @@ func (n *node) applyCommitted(proposal *pb.Proposal, key uint64) error {
 			// was not there). We can't be certain if we have disabled x.UpdateExtSnapshotStreamingState or
 			// not, so we are disabling it here:
 			x.ExtSnapshotStreamingState(false)
-			if err := posting.DeleteAll(); err != nil {
+			if err := DeleteAll(); err != nil {
 				glog.Errorf("[import] failed to delete all data: %v", err)
 				return err
 			}
@@ -818,7 +817,7 @@ func (n *node) applyCommitted(proposal *pb.Proposal, key uint64) error {
 		x.AssertTrue(proposal.DeleteNs.Namespace != x.RootNamespace)
 		span.AddEvent("Deleting namespace: %d", trace.WithAttributes(
 			attribute.Int64("namespace", int64(proposal.DeleteNs.Namespace))))
-		return posting.DeleteNamespace(proposal.DeleteNs.Namespace)
+		return DeleteNamespace(proposal.DeleteNs.Namespace)
 
 	case proposal.CdcState != nil:
 		n.cdcTracker.updateCDCState(proposal.CdcState)
@@ -966,9 +965,9 @@ func (n *node) processApplyCh() {
 func (n *node) commitOrAbort(pkey uint64, delta *pb.OracleDelta) error {
 	x.PrintOracleDelta(delta)
 	// First let's commit all mutations to disk.
-	writer := posting.NewTxnWriter(pstore)
+	writer := NewTxnWriter(pstore)
 	toDisk := func(start, commit uint64) {
-		txn := posting.Oracle().GetTxn(start)
+		txn := Oracle().GetTxn(start)
 		if txn == nil || commit == 0 {
 			return
 		}
@@ -1015,12 +1014,12 @@ func (n *node) commitOrAbort(pkey uint64, delta *pb.OracleDelta) error {
 
 	// Clear all the cached lists that were touched by this transaction.
 	for _, status := range delta.Txns {
-		txn := posting.Oracle().GetTxn(status.StartTs)
+		txn := Oracle().GetTxn(status.StartTs)
 		txn.UpdateCachedKeys(status.CommitTs)
 	}
 
 	// Now advance Oracle(), so we can service waiting reads.
-	posting.Oracle().ProcessDelta(delta)
+	Oracle().ProcessDelta(delta)
 	return nil
 }
 
@@ -1132,7 +1131,7 @@ func (n *node) proposeSnapshot() error {
 	// So, we iterate over logs. If we hit MinPendingStartTs, that generates our
 	// snapshotIdx. In any case, we continue picking up txn updates, to generate
 	// a maxCommitTs, which would become the readTs for the snapshot.
-	minPendingStart := x.Min(posting.Oracle().MinPendingStartTs(), n.cdcTracker.getTs())
+	minPendingStart := x.Min(Oracle().MinPendingStartTs(), n.cdcTracker.getTs())
 	snap, err := n.calculateSnapshot(0, lastIdx, minPendingStart)
 	if err != nil {
 		return err
@@ -1181,7 +1180,7 @@ func (n *node) updateRaftProgress() error {
 	applied := n.Store.Uint(raftwal.CheckpointIndex)
 
 	snap, err := n.calculateSnapshot(applied, n.Applied.DoneUntil(),
-		posting.Oracle().MinPendingStartTs())
+		Oracle().MinPendingStartTs())
 	if err != nil || snap == nil || snap.Index <= applied {
 		return err
 	}
@@ -1715,7 +1714,7 @@ func (n *node) blockingAbort(req *pb.TxnTimestamps) error {
 // abort. Note that only the leader runs this function.
 func (n *node) abortOldTransactions() {
 	// Aborts if not already committed.
-	starts := posting.Oracle().TxnOlderThan(x.WorkerConfig.AbortOlderThan)
+	starts := Oracle().TxnOlderThan(x.WorkerConfig.AbortOlderThan)
 	if len(starts) == 0 {
 		return
 	}
@@ -1800,7 +1799,7 @@ func (n *node) calculateSnapshot(startIdx, lastIdx, minPendingStart uint64) (*pb
 	span.AddEvent("Found Raft entries", trace.WithAttributes(
 		attribute.Int64("count", int64(lastIdx-first))))
 
-	if num := posting.Oracle().NumPendingTxns(); num > 0 {
+	if num := Oracle().NumPendingTxns(); num > 0 {
 		// TODO (Damon): this is associated with stuck alphas. Is there anything else we should log here
 		// such as the transaction IDs so we can see in logs if a specific tx is stuck for a long time and how long?
 		glog.V(2).Infof("Num pending txns: %d", num)

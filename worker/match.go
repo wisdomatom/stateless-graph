@@ -7,7 +7,6 @@ package worker
 
 import (
 	"github.com/wisdomatom/stateless-graph/algo"
-	"github.com/wisdomatom/stateless-graph/posting"
 	"github.com/wisdomatom/stateless-graph/protos/pb"
 	"github.com/wisdomatom/stateless-graph/tok"
 	"github.com/wisdomatom/stateless-graph/x"
@@ -71,14 +70,14 @@ func matchFuzzy(query, val string, max int) bool {
 // index. matchFuzzy does the actual fuzzy match.
 // Returns the list of uids even if empty, or an error otherwise.
 func uidsForMatch(attr string, arg funcArgs) (*pb.List, error) {
-	opts := posting.ListOptions{
+	opts := ListOptions{
 		ReadTs:   arg.q.ReadTs,
 		First:    int(arg.q.First),
 		AfterUid: arg.q.AfterUid,
 	}
 	uidsForNgram := func(ngram string) (*pb.List, error) {
 		key := x.IndexKey(attr, ngram)
-		pl, err := posting.GetNoStore(key, arg.q.ReadTs)
+		pl, err := GetNoStore(key, arg.q.ReadTs)
 		if err != nil {
 			return nil, err
 		}

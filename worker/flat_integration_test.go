@@ -8,7 +8,6 @@ import (
 	"github.com/dgraph-io/dgo/v250/protos/api"
 	"github.com/stretchr/testify/require"
 
-	"github.com/wisdomatom/stateless-graph/posting"
 	"github.com/wisdomatom/stateless-graph/protos/pb"
 	"github.com/wisdomatom/stateless-graph/schema"
 	"github.com/wisdomatom/stateless-graph/x"
@@ -23,7 +22,6 @@ func TestFlatStorageE2EWorkflow(t *testing.T) {
 
 	kv := x.NewBadgerKV(db)
 	pstore = kv
-	posting.Init(kv, 0, false)
 	Init(kv)
 	schema.Init(kv)
 
@@ -49,7 +47,7 @@ func TestFlatStorageE2EWorkflow(t *testing.T) {
 	})
 
 	startTs := uint64(10)
-	txn := posting.Oracle().RegisterStartTs(startTs)
+	txn := Oracle().RegisterStartTs(startTs)
 
 	userA := uint64(1001)
 	userB := uint64(2001)
@@ -96,9 +94,9 @@ func TestFlatStorageE2EWorkflow(t *testing.T) {
 
 	out := &pb.Result{}
 	args := funcArgs{q: q, gid: 1, srcFn: srcFn, out: out}
-	qs := &queryState{cache: posting.NoCache(commitTs)}
+	qs := &queryState{cache: NoCacheAt(commitTs)}
 
-	err = qs.handleUidPostings(ctx, args, posting.ListOptions{})
+	err = qs.handleUidPostings(ctx, args, ListOptions{})
 	require.NoError(t, err)
 
 	require.Len(t, out.UidMatrix, 1)
@@ -116,7 +114,7 @@ func TestFlatStorageE2EWorkflow(t *testing.T) {
 
 	outRev := &pb.Result{}
 	argsRev := funcArgs{q: qRev, gid: 1, srcFn: srcFnRev, out: outRev}
-	err = qs.handleUidPostings(ctx, argsRev, posting.ListOptions{})
+	err = qs.handleUidPostings(ctx, argsRev, ListOptions{})
 	require.NoError(t, err)
 
 	require.Len(t, outRev.UidMatrix, 1)
@@ -147,7 +145,7 @@ func TestFlatStorageE2EWorkflow(t *testing.T) {
 		Op:     pb.DirectedEdge_DEL,
 	}
 	startTs2 := commitTs + 1
-	txn2 := posting.Oracle().RegisterStartTs(startTs2)
+	txn2 := Oracle().RegisterStartTs(startTs2)
 	require.NoError(t, runMutation(ctx, delName, txn2))
 	tctx2 := &api.TxnContext{StartTs: startTs2}
 	commitTs2, err := CommitOverNetwork(ctx, tctx2)

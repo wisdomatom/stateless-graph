@@ -12,7 +12,6 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/wisdomatom/stateless-graph/posting"
 	"github.com/wisdomatom/stateless-graph/protos/pb"
 	"github.com/wisdomatom/stateless-graph/schema"
 	"github.com/wisdomatom/stateless-graph/x"
@@ -37,7 +36,7 @@ func TestPopulateMutationMap(t *testing.T) {
 }
 
 func TestCheckSchema(t *testing.T) {
-	require.NoError(t, posting.DeleteAll())
+	require.NoError(t, DeleteAll())
 	initTest(t, "name:string @index(term) .")
 	// non uid to uid
 	s1 := &pb.SchemaUpdate{Predicate: x.AttrInRootNamespace("name"), ValueType: pb.Posting_UID}

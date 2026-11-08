@@ -11,7 +11,6 @@ import (
 	"encoding/binary"
 	"sync"
 
-	"github.com/wisdomatom/stateless-graph/posting"
 	"github.com/wisdomatom/stateless-graph/storage/flat"
 	"github.com/wisdomatom/stateless-graph/tok/index"
 	"github.com/wisdomatom/stateless-graph/x"
@@ -54,7 +53,7 @@ func (t *flatViTxn) Get(key []byte) ([]byte, error) {
 	shardID := flat.CalculateShardID(pk.Uid, 0)
 	_, valBytes, err := GlobalFlatEngine.GetData(t.txn, shardID, ns, attrID, pk.Uid)
 	if err != nil || len(valBytes) == 0 {
-		return nil, posting.ErrNoValue
+		return nil, ErrNoValue
 	}
 	return valBytes, nil
 }
@@ -139,7 +138,7 @@ func (c *flatViCache) Get(key []byte) ([]byte, error) {
 
 	_, valBytes, err := GlobalFlatEngine.GetData(readTxn, shardID, ns, attrID, pk.Uid)
 	if err != nil || len(valBytes) == 0 {
-		return nil, posting.ErrNoValue
+		return nil, ErrNoValue
 	}
 	return valBytes, nil
 }

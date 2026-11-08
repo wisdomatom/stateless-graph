@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-package posting
+package worker
 
 import (
 	"math"
@@ -18,11 +18,20 @@ type StatsHolder struct {
 	predStats map[string]StatContainer
 }
 
+var globalStatsHolder *StatsHolder
+
+func init() {
+	globalStatsHolder = NewStatsHolder()
+}
+
+func GetStatsHolder() *StatsHolder {
+	return globalStatsHolder
+}
+
 func NewStatsHolder() *StatsHolder {
 	return &StatsHolder{
 		predStats: make(map[string]StatContainer),
 	}
-
 }
 
 type StatContainer interface {

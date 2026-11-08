@@ -9,7 +9,6 @@ import (
 	"github.com/pkg/errors"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/wisdomatom/stateless-graph/posting"
 	"github.com/wisdomatom/stateless-graph/protos/pb"
 	"github.com/wisdomatom/stateless-graph/schema"
 	"github.com/wisdomatom/stateless-graph/storage/flat"
@@ -260,8 +259,8 @@ func ApplyFlatMutation(ctx context.Context, edge *pb.DirectedEdge, txn x.KVTxn) 
 	return nil
 }
 
-// FlatScanEdges 用于扫描出边，替换原有的 posting.List 读取
-func FlatScanEdges(ctx context.Context, txn x.KVTxn, attr string, fromUID uint64, opts posting.ListOptions) (*pb.List, []*pb.Facets, error) {
+// FlatScanEdges 用于扫描出边，替换原有的 List 读取
+func FlatScanEdges(ctx context.Context, txn x.KVTxn, attr string, fromUID uint64, opts ListOptions) (*pb.List, []*pb.Facets, error) {
 	ns, rawAttr := parseNamespaceSafe(attr)
 	attrID := flat.PredicateToAttrID(rawAttr)
 	shardID := flat.CalculateShardID(fromUID, 0)
@@ -326,7 +325,7 @@ func FlatScanEdges(ctx context.Context, txn x.KVTxn, attr string, fromUID uint64
 }
 
 // FlatScanReverseEdges 用于扫描反向边
-func FlatScanReverseEdges(ctx context.Context, txn x.KVTxn, attr string, toUID uint64, opts posting.ListOptions) (*pb.List, error) {
+func FlatScanReverseEdges(ctx context.Context, txn x.KVTxn, attr string, toUID uint64, opts ListOptions) (*pb.List, error) {
 	ns, rawAttr := parseNamespaceSafe(attr)
 	attrID := flat.PredicateToAttrID(rawAttr)
 	shardID := flat.CalculateShardID(toUID, 0)

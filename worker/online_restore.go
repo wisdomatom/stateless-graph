@@ -24,7 +24,6 @@ import (
 	"github.com/dgraph-io/badger/v4"
 	"github.com/dgraph-io/badger/v4/options"
 	"github.com/wisdomatom/stateless-graph/conn"
-	"github.com/wisdomatom/stateless-graph/posting"
 	"github.com/wisdomatom/stateless-graph/protos/pb"
 	"github.com/wisdomatom/stateless-graph/schema"
 	"github.com/wisdomatom/stateless-graph/tok/hnsw"
@@ -182,7 +181,7 @@ func (w *grpcWorker) Restore(ctx context.Context, req *pb.RestoreRequest) (*pb.S
 
 	// We should wait to ensure that we have seen all the updates until the StartTs
 	// of this restore transaction.
-	if err := posting.Oracle().WaitForTs(ctx, req.RestoreTs); err != nil {
+	if err := Oracle().WaitForTs(ctx, req.RestoreTs); err != nil {
 		return nil, errors.Wrapf(err, "cannot wait for restore ts %d", req.RestoreTs)
 	}
 
@@ -422,7 +421,7 @@ func handleRestoreProposal(ctx context.Context, req *pb.RestoreRequest, pidx uin
 		return errors.Wrapf(err, "cannot load schema after restore")
 	}
 
-	posting.ResetCache()
+	ResetCache()
 	ResetAclCache()
 	groups().applyInitialSchema()
 	groups().applyInitialTypes()

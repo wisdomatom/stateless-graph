@@ -40,7 +40,6 @@ import (
 	"github.com/wisdomatom/stateless-graph/conn"
 	"github.com/wisdomatom/stateless-graph/dql"
 	gqlSchema "github.com/wisdomatom/stateless-graph/graphql/schema"
-	"github.com/wisdomatom/stateless-graph/posting"
 	"github.com/wisdomatom/stateless-graph/protos/pb"
 	"github.com/wisdomatom/stateless-graph/query"
 	"github.com/wisdomatom/stateless-graph/schema"
@@ -1204,7 +1203,7 @@ func (s *Server) Health(ctx context.Context, all bool) (*api.Response, error) {
 		Ongoing:     worker.GetOngoingTasks(),
 		Indexing:    schema.GetIndexingPredicates(),
 		EeFeatures:  worker.GetFeaturesList(),
-		MaxAssigned: posting.Oracle().MaxAssigned(),
+		MaxAssigned: worker.Oracle().MaxAssigned(),
 	})
 
 	var err error
@@ -1548,7 +1547,7 @@ func processQuery(ctx context.Context, qc *queryContext) (*api.Response, error) 
 			return resp, errors.Errorf("A best effort query must be read-only.")
 		}
 		if qc.req.StartTs == 0 {
-			qc.req.StartTs = posting.Oracle().MaxAssigned()
+			qc.req.StartTs = worker.Oracle().MaxAssigned()
 		}
 		qr.Cache = worker.NoCache
 	}

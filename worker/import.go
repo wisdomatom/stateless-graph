@@ -13,7 +13,6 @@ import (
 
 	"github.com/dgraph-io/dgo/v250/protos/api"
 	"github.com/wisdomatom/stateless-graph/conn"
-	"github.com/wisdomatom/stateless-graph/posting"
 	"github.com/wisdomatom/stateless-graph/protos/pb"
 	"github.com/wisdomatom/stateless-graph/schema"
 	"github.com/wisdomatom/stateless-graph/x"
@@ -422,7 +421,7 @@ func postStreamProcessing(ctx context.Context) error {
 	}
 
 	gr.informZeroAboutTablets()
-	posting.ResetCache()
+	ResetCache()
 	ResetAclCache()
 	groups().applyInitialSchema()
 	groups().applyInitialTypes()

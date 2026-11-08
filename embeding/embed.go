@@ -24,7 +24,6 @@ import (
 	"github.com/dgraph-io/dgo/v250/protos/api"
 	"github.com/wisdomatom/stateless-graph/conn"
 	"github.com/wisdomatom/stateless-graph/edgraph"
-	"github.com/wisdomatom/stateless-graph/posting"
 	"github.com/wisdomatom/stateless-graph/schema"
 	"github.com/wisdomatom/stateless-graph/worker"
 	"github.com/wisdomatom/stateless-graph/x"
@@ -204,9 +203,6 @@ func (r *EmbedDgraph) dAlpha(conf DgraphServer, lis *bufconn.Listener) {
 	worker.Init(worker.State.Pstore)
 
 	schema.Init(worker.State.Pstore)
-	// Increase cache for 32GB RAM
-	cacheSizeBytes := 1 * 1024 * 1024 * 1024 // 1GB cache
-	posting.Init(worker.State.Pstore, int64(cacheSizeBytes), false)
 
 	x.Config.LimitMutationsNquad = 2000000
 	x.Config.LimitQueryEdge = 10000000

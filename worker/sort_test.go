@@ -14,14 +14,13 @@ import (
 
 	"github.com/dgraph-io/badger/v4"
 	bpb "github.com/dgraph-io/badger/v4/pb"
-	"github.com/wisdomatom/stateless-graph/posting"
 	"github.com/wisdomatom/stateless-graph/protos/pb"
 	"github.com/wisdomatom/stateless-graph/schema"
 	"github.com/wisdomatom/stateless-graph/x"
 	"github.com/stretchr/testify/require"
 )
 
-func readPostingListFromDisk(key []byte, kv x.KVDB, readTs uint64) (*posting.List, error) {
+func readPostingListFromDisk(key []byte, kv x.KVDB, readTs uint64) (*List, error) {
 	txn := kv.NewTransactionAt(readTs, false)
 	defer txn.Discard()
 
@@ -32,7 +31,7 @@ func readPostingListFromDisk(key []byte, kv x.KVDB, readTs uint64) (*posting.Lis
 	itr := txn.NewIterator(opt)
 	defer itr.Close()
 	itr.Seek(key)
-	return posting.ReadPostingList(key, itr)
+	return ReadPostingList(key, itr)
 }
 
 func rollup(t *testing.T, key []byte, kv x.KVDB, readTs uint64) {
@@ -41,11 +40,11 @@ func rollup(t *testing.T, key []byte, kv x.KVDB, readTs uint64) {
 	kvs, err := ol.Rollup(nil, readTs+1)
 	require.NoError(t, err)
 	require.NoError(t, writePostingListToDisk(kvs))
-	posting.ResetCache()
+	ResetCache()
 }
 
 func writePostingListToDisk(kvs []*bpb.KV) error {
-	writer := posting.NewTxnWriter(pstore)
+	writer := NewTxnWriter(pstore)
 	for _, kv := range kvs {
 		if err := writer.SetAt(kv.Key, kv.Value, kv.UserMeta[0], kv.Version); err != nil {
 			return err
@@ -64,7 +63,6 @@ func TestEmptyTypeSchema(t *testing.T) {
 	x.Check(err)
 	bkv := x.NewBadgerKV(ps)
 	pstore = bkv
-	posting.Init(bkv, 0, false)
 	Init(bkv)
 
 	typeName := "1-temp"
@@ -74,7 +72,7 @@ func TestEmptyTypeSchema(t *testing.T) {
 	e := &badger.Entry{
 		Key:      x.TypeKey(typeName),
 		Value:    make([]byte, 0),
-		UserMeta: posting.BitSchemaPosting,
+		UserMeta: BitSchemaPosting,
 	}
 	require.Nil(t, txn.SetEntry(e.WithDiscard()))
 	require.Nil(t, txn.CommitAt(ts, nil))
@@ -101,7 +99,6 @@ func TestDeleteSetWithVarEdgeCorruptsData(t *testing.T) {
 	require.NoError(t, err)
 	bkv := x.NewBadgerKV(ps)
 	pstore = bkv
-	posting.Init(bkv, 0, false)
 	Init(bkv)
 
 	// Set schema
@@ -122,12 +119,12 @@ func TestDeleteSetWithVarEdgeCorruptsData(t *testing.T) {
 	uidJohn := uint64(2)
 
 	runMutation := func(startTs, commitTs uint64, edges []*pb.DirectedEdge) {
-		txn := posting.Oracle().RegisterStartTs(startTs)
+		txn := Oracle().RegisterStartTs(startTs)
 		for _, edge := range edges {
 			require.NoError(t, runMutation(ctx, edge, txn))
 		}
 		txn.Update()
-		writer := posting.NewTxnWriter(bkv)
+		writer := NewTxnWriter(bkv)
 		require.NoError(t, txn.CommitToDisk(writer, commitTs))
 		require.NoError(t, writer.Flush())
 		txn.UpdateCachedKeys(commitTs)
@@ -189,12 +186,12 @@ func TestDeleteSetWithVarEdgeCorruptsData(t *testing.T) {
 	})
 
 	// Read and validate: Amanda assigned, John unassigned
-	txnRead := posting.Oracle().RegisterStartTs(10)
+	txnRead := Oracle().RegisterStartTs(10)
 
 	list, err := txnRead.Get(key)
 	require.NoError(t, err)
 
-	uids, err := list.Uids(posting.ListOptions{ReadTs: 10})
+	uids, err := list.Uids(ListOptions{ReadTs: 10})
 	require.NoError(t, err)
 
 	// This assertion FAILS in the broken case where both Amanda and John are assigned
@@ -204,7 +201,7 @@ func TestDeleteSetWithVarEdgeCorruptsData(t *testing.T) {
 	listRev, err := txnRead.Get(keyRev)
 	require.NoError(t, err)
 
-	reverseUids, err := listRev.Uids(posting.ListOptions{ReadTs: 10})
+	reverseUids, err := listRev.Uids(ListOptions{ReadTs: 10})
 	require.NoError(t, err)
 
 	require.Equal(t, []uint64{uidAmanda}, reverseUids.Uids, "Only Amanda should be assigned on reverse edge")
@@ -220,18 +217,17 @@ func TestGetScalarList(t *testing.T) {
 	x.Check(err)
 	bkv := x.NewBadgerKV(ps)
 	pstore = bkv
-	posting.Init(bkv, 0, false)
 	Init(bkv)
 	err = schema.ParseBytes([]byte("scalarPredicateCount4: uid ."), 1)
 	require.NoError(t, err)
 
 	runM := func(startTs, commitTs uint64, edges []*pb.DirectedEdge) {
-		txn := posting.Oracle().RegisterStartTs(startTs)
+		txn := Oracle().RegisterStartTs(startTs)
 		for _, edge := range edges {
 			x.Check(runMutation(context.Background(), edge, txn))
 		}
 		txn.Update()
-		writer := posting.NewTxnWriter(pstore)
+		writer := NewTxnWriter(pstore)
 		require.NoError(t, txn.CommitToDisk(writer, commitTs))
 		require.NoError(t, writer.Flush())
 		txn.UpdateCachedKeys(commitTs)
@@ -258,10 +254,10 @@ func TestGetScalarList(t *testing.T) {
 		Op:        pb.DirectedEdge_SET,
 	}})
 
-	txn := posting.Oracle().RegisterStartTs(13)
+	txn := Oracle().RegisterStartTs(13)
 	l, err := txn.Get(key)
 	require.Nil(t, err)
-	uids, err := l.Uids(posting.ListOptions{ReadTs: 13})
+	uids, err := l.Uids(ListOptions{ReadTs: 13})
 	require.Nil(t, err)
 	require.Equal(t, 1, len(uids.Uids))
 }
@@ -276,7 +272,6 @@ func TestMultipleTxnListCount(t *testing.T) {
 	x.Check(err)
 	bkv := x.NewBadgerKV(ps)
 	pstore = bkv
-	posting.Init(bkv, 0, false)
 	Init(bkv)
 	err = schema.ParseBytes([]byte("scalarPredicateCount3: [uid] @count ."), 1)
 	require.NoError(t, err)
@@ -285,12 +280,12 @@ func TestMultipleTxnListCount(t *testing.T) {
 	attr := x.AttrInRootNamespace("scalarPredicateCount3")
 
 	runM := func(startTs, commitTs uint64, edges []*pb.DirectedEdge) {
-		txn := posting.Oracle().RegisterStartTs(startTs)
+		txn := Oracle().RegisterStartTs(startTs)
 		for _, edge := range edges {
 			x.Check(runMutation(ctx, edge, txn))
 		}
 		txn.Update()
-		writer := posting.NewTxnWriter(pstore)
+		writer := NewTxnWriter(pstore)
 		require.NoError(t, txn.CommitToDisk(writer, commitTs))
 		require.NoError(t, writer.Flush())
 		txn.UpdateCachedKeys(commitTs)
@@ -310,18 +305,18 @@ func TestMultipleTxnListCount(t *testing.T) {
 		Op:        pb.DirectedEdge_SET,
 	}})
 
-	txn := posting.Oracle().RegisterStartTs(13)
+	txn := Oracle().RegisterStartTs(13)
 	key := x.CountKey(attr, 1, false)
 	l, err := txn.Get(key)
 	require.Nil(t, err)
-	uids, err := l.Uids(posting.ListOptions{ReadTs: 13})
+	uids, err := l.Uids(ListOptions{ReadTs: 13})
 	require.Nil(t, err)
 	require.Equal(t, 0, len(uids.Uids))
 
 	key = x.CountKey(attr, 2, false)
 	l, err = txn.Get(key)
 	require.Nil(t, err)
-	uids, err = l.Uids(posting.ListOptions{ReadTs: 13})
+	uids, err = l.Uids(ListOptions{ReadTs: 13})
 	require.Nil(t, err)
 	require.Equal(t, 1, len(uids.Uids))
 }
@@ -336,7 +331,6 @@ func TestScalarPredicateRevCount(t *testing.T) {
 	x.Check(err)
 	bkv := x.NewBadgerKV(ps)
 	pstore = bkv
-	posting.Init(bkv, 0, false)
 	Init(bkv)
 	err = schema.ParseBytes([]byte("scalarPredicateCount2: uid @reverse @count ."), 1)
 	require.NoError(t, err)
@@ -345,12 +339,12 @@ func TestScalarPredicateRevCount(t *testing.T) {
 	attr := x.AttrInRootNamespace("scalarPredicateCount2")
 
 	runM := func(startTs, commitTs uint64, edges []*pb.DirectedEdge) {
-		txn := posting.Oracle().RegisterStartTs(startTs)
+		txn := Oracle().RegisterStartTs(startTs)
 		for _, edge := range edges {
 			x.Check(runMutation(ctx, edge, txn))
 		}
 		txn.Update()
-		writer := posting.NewTxnWriter(pstore)
+		writer := NewTxnWriter(pstore)
 		require.NoError(t, txn.CommitToDisk(writer, commitTs))
 		require.NoError(t, writer.Flush())
 		txn.UpdateCachedKeys(commitTs)
@@ -370,7 +364,7 @@ func TestScalarPredicateRevCount(t *testing.T) {
 		Op:        pb.DirectedEdge_DEL,
 	}})
 
-	txn := posting.Oracle().RegisterStartTs(13)
+	txn := Oracle().RegisterStartTs(13)
 	key := x.DataKey(attr, 1)
 	l, err := txn.Get(key)
 	require.Nil(t, err)
@@ -386,7 +380,7 @@ func TestScalarPredicateRevCount(t *testing.T) {
 		Op:        pb.DirectedEdge_SET,
 	}})
 
-	txn = posting.Oracle().RegisterStartTs(18)
+	txn = Oracle().RegisterStartTs(18)
 	l, err = txn.Get(key)
 	require.Nil(t, err)
 	l.RLock()
@@ -401,7 +395,7 @@ func TestScalarPredicateRevCount(t *testing.T) {
 		Op:        pb.DirectedEdge_DEL,
 	}})
 
-	txn = posting.Oracle().RegisterStartTs(20)
+	txn = Oracle().RegisterStartTs(20)
 	l, err = txn.Get(key)
 	require.Nil(t, err)
 	l.RLock()
@@ -419,7 +413,6 @@ func TestScalarPredicateIntCount(t *testing.T) {
 	x.Check(err)
 	bkv := x.NewBadgerKV(ps)
 	pstore = bkv
-	posting.Init(bkv, 0, false)
 	Init(bkv)
 	err = schema.ParseBytes([]byte("scalarPredicateCount1: string @count ."), 1)
 	require.NoError(t, err)
@@ -428,10 +421,10 @@ func TestScalarPredicateIntCount(t *testing.T) {
 	attr := x.AttrInRootNamespace("scalarPredicateCount1")
 
 	runM := func(startTs, commitTs uint64, edge *pb.DirectedEdge) {
-		txn := posting.Oracle().RegisterStartTs(startTs)
+		txn := Oracle().RegisterStartTs(startTs)
 		x.Check(runMutation(ctx, edge, txn))
 		txn.Update()
-		writer := posting.NewTxnWriter(pstore)
+		writer := NewTxnWriter(pstore)
 		require.NoError(t, txn.CommitToDisk(writer, commitTs))
 		require.NoError(t, writer.Flush())
 		txn.UpdateCachedKeys(commitTs)
@@ -456,7 +449,7 @@ func TestScalarPredicateIntCount(t *testing.T) {
 		Op:        pb.DirectedEdge_DEL,
 	})
 
-	txn := posting.Oracle().RegisterStartTs(20)
+	txn := Oracle().RegisterStartTs(20)
 	l, err := txn.Get(key)
 	require.Nil(t, err)
 	l.RLock()
@@ -474,7 +467,6 @@ func TestScalarPredicateCount(t *testing.T) {
 	x.Check(err)
 	bkv := x.NewBadgerKV(ps)
 	pstore = bkv
-	posting.Init(bkv, 0, false)
 	Init(bkv)
 	err = schema.ParseBytes([]byte("scalarPredicateCount: uid @count ."), 1)
 	require.NoError(t, err)
@@ -483,10 +475,10 @@ func TestScalarPredicateCount(t *testing.T) {
 	attr := x.AttrInRootNamespace("scalarPredicateCount")
 
 	runM := func(startTs, commitTs uint64, edge *pb.DirectedEdge) {
-		txn := posting.Oracle().RegisterStartTs(startTs)
+		txn := Oracle().RegisterStartTs(startTs)
 		x.Check(runMutation(ctx, edge, txn))
 		txn.Update()
-		writer := posting.NewTxnWriter(pstore)
+		writer := NewTxnWriter(pstore)
 		require.NoError(t, txn.CommitToDisk(writer, commitTs))
 		require.NoError(t, writer.Flush())
 		txn.UpdateCachedKeys(commitTs)
@@ -511,7 +503,7 @@ func TestScalarPredicateCount(t *testing.T) {
 		Op:        pb.DirectedEdge_SET,
 	})
 
-	txn := posting.Oracle().RegisterStartTs(15)
+	txn := Oracle().RegisterStartTs(15)
 	l, err := txn.Get(key)
 	require.Nil(t, err)
 	l.RLock()
@@ -529,13 +521,12 @@ func TestSingleUidReplacement(t *testing.T) {
 	x.Check(err)
 	bkv := x.NewBadgerKV(ps)
 	pstore = bkv
-	posting.Init(bkv, 0, false)
 	Init(bkv)
 	err = schema.ParseBytes([]byte("singleUidReplaceTest: uid ."), 1)
 	require.NoError(t, err)
 
 	ctx := context.Background()
-	txn := posting.Oracle().RegisterStartTs(5)
+	txn := Oracle().RegisterStartTs(5)
 	attr := x.AttrInRootNamespace("singleUidReplaceTest")
 
 	// Txn 1. Set 1 -> 2
@@ -547,13 +538,13 @@ func TestSingleUidReplacement(t *testing.T) {
 	}, txn))
 
 	txn.Update()
-	writer := posting.NewTxnWriter(pstore)
+	writer := NewTxnWriter(pstore)
 	require.NoError(t, txn.CommitToDisk(writer, 7))
 	require.NoError(t, writer.Flush())
 	txn.UpdateCachedKeys(7)
 
 	// Txn 2. Set 1 -> 3
-	txn = posting.Oracle().RegisterStartTs(9)
+	txn = Oracle().RegisterStartTs(9)
 
 	x.Check(runMutation(ctx, &pb.DirectedEdge{
 		ValueId: 3,
@@ -563,7 +554,7 @@ func TestSingleUidReplacement(t *testing.T) {
 	}, txn))
 
 	txn.Update()
-	writer = posting.NewTxnWriter(pstore)
+	writer = NewTxnWriter(pstore)
 	require.NoError(t, txn.CommitToDisk(writer, 11))
 	require.NoError(t, writer.Flush())
 	txn.UpdateCachedKeys(11)
@@ -571,11 +562,11 @@ func TestSingleUidReplacement(t *testing.T) {
 	key := x.DataKey(attr, 1)
 
 	// Reading the david index, we should see 2 inserted, 1 deleted
-	txn = posting.Oracle().RegisterStartTs(15)
+	txn = Oracle().RegisterStartTs(15)
 	l, err := txn.Get(key)
 	require.NoError(t, err)
 
-	uids, err := l.Uids(posting.ListOptions{ReadTs: 15})
+	uids, err := l.Uids(ListOptions{ReadTs: 15})
 	require.NoError(t, err)
 	require.Equal(t, uids.Uids, []uint64{3})
 }
@@ -590,13 +581,12 @@ func TestSingleString(t *testing.T) {
 	x.Check(err)
 	bkv := x.NewBadgerKV(ps)
 	pstore = bkv
-	posting.Init(bkv, 0, false)
 	Init(bkv)
 	err = schema.ParseBytes([]byte("singleUidTest: string @index(exact) @unique ."), 1)
 	require.NoError(t, err)
 
 	ctx := context.Background()
-	txn := posting.Oracle().RegisterStartTs(5)
+	txn := Oracle().RegisterStartTs(5)
 	attr := x.AttrInRootNamespace("singleUidTest")
 
 	// Txn 1. Set 1 -> david 2 -> blush
@@ -615,13 +605,13 @@ func TestSingleString(t *testing.T) {
 	}, txn))
 
 	txn.Update()
-	writer := posting.NewTxnWriter(pstore)
+	writer := NewTxnWriter(pstore)
 	require.NoError(t, txn.CommitToDisk(writer, 7))
 	require.NoError(t, writer.Flush())
 	txn.UpdateCachedKeys(7)
 
 	// Txn 2. Set 2 -> david 1 -> blush
-	txn = posting.Oracle().RegisterStartTs(9)
+	txn = Oracle().RegisterStartTs(9)
 
 	x.Check(runMutation(ctx, &pb.DirectedEdge{
 		Value:  []byte("david"),
@@ -638,7 +628,7 @@ func TestSingleString(t *testing.T) {
 	}, txn))
 
 	txn.Update()
-	writer = posting.NewTxnWriter(pstore)
+	writer = NewTxnWriter(pstore)
 	require.NoError(t, txn.CommitToDisk(writer, 11))
 	require.NoError(t, writer.Flush())
 	txn.UpdateCachedKeys(11)
@@ -646,7 +636,7 @@ func TestSingleString(t *testing.T) {
 	key := x.IndexKey(attr, string([]byte{2, 100, 97, 118, 105, 100}))
 
 	// Reading the david index, we should see 2 inserted, 1 deleted
-	txn = posting.Oracle().RegisterStartTs(15)
+	txn = Oracle().RegisterStartTs(15)
 	l, err := txn.Get(key)
 	require.NoError(t, err)
 
@@ -661,7 +651,7 @@ func TestSingleString(t *testing.T) {
 
 	rollup(t, key, pstore, 16)
 
-	txn = posting.Oracle().RegisterStartTs(18)
+	txn = Oracle().RegisterStartTs(18)
 	l, err = txn.Get(key)
 	require.NoError(t, err)
 
@@ -686,13 +676,12 @@ func TestLangExact(t *testing.T) {
 	bkv := x.NewBadgerKV(ps)
 	pstore = bkv
 	// Not using posting list cache
-	posting.Init(bkv, 0, false)
 	Init(bkv)
 	err = schema.ParseBytes([]byte("testLang: string @index(term) @lang ."), 1)
 	require.NoError(t, err)
 
 	ctx := context.Background()
-	txn := posting.Oracle().RegisterStartTs(5)
+	txn := Oracle().RegisterStartTs(5)
 	attr := x.AttrInRootNamespace("testLang")
 
 	edge := &pb.DirectedEdge{
@@ -716,7 +705,7 @@ func TestLangExact(t *testing.T) {
 	x.Check(runMutation(ctx, edge, txn))
 
 	txn.Update()
-	writer := posting.NewTxnWriter(pstore)
+	writer := NewTxnWriter(pstore)
 	require.NoError(t, txn.CommitToDisk(writer, 2))
 	require.NoError(t, writer.Flush())
 	txn.UpdateCachedKeys(2)
@@ -753,7 +742,6 @@ func BenchmarkAddMutationWithIndex(b *testing.B) {
 	bkv := x.NewBadgerKV(ps)
 	pstore = bkv
 	// Not using posting list cache
-	posting.Init(bkv, 0, false)
 	Init(bkv)
 	err = schema.ParseBytes([]byte("benchmarkadd: string @index(term) ."), 1)
 	fmt.Println(err)
@@ -761,7 +749,7 @@ func BenchmarkAddMutationWithIndex(b *testing.B) {
 		panic(err)
 	}
 	ctx := context.Background()
-	txn := posting.Oracle().RegisterStartTs(5)
+	txn := Oracle().RegisterStartTs(5)
 	attr := x.AttrInRootNamespace("benchmarkadd")
 
 	n := uint64(1000)

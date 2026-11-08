@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-package posting
+package worker
 
 import (
 	"math"
@@ -15,7 +15,7 @@ import (
 	"github.com/wisdomatom/stateless-graph/x"
 )
 
-// TxnWriter is in charge or writing transactions to badger.
+// TxnWriter is in charge of writing transactions to persistent storage.
 type TxnWriter struct {
 	db  x.KVDB
 	wg  sync.WaitGroup
@@ -43,7 +43,7 @@ func (w *TxnWriter) cb(err error) {
 	}
 }
 
-// Write stores the given key-value pairs in badger.
+// Write stores the given key-value pairs in badger/tikv.
 func (w *TxnWriter) Write(kvs *pb.KVList) error {
 	for _, kv := range kvs.Kv {
 		var meta byte
@@ -65,7 +65,6 @@ func (w *TxnWriter) update(commitTs uint64, f func(txn x.KVTxn) error) error {
 	defer txn.Discard()
 
 	err := f(txn)
-	// We don't have ErrTxnTooBig in the interface yet, but let's assume it's handled or ignore for now.
 	if err != nil {
 		return err
 	}
@@ -87,7 +86,6 @@ func (w *TxnWriter) SetAt(key, val []byte, meta byte, ts uint64) error {
 
 // Flush waits until all operations are done and all data is written to disk.
 func (w *TxnWriter) Flush() error {
-	// No need to call Sync here.
 	return w.Wait()
 }
 

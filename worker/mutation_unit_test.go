@@ -14,9 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/dgraph-io/badger/v4"
-	"github.com/wisdomatom/stateless-graph/posting"
 	"github.com/wisdomatom/stateless-graph/protos/pb"
-	"github.com/wisdomatom/stateless-graph/schema"
 	"github.com/wisdomatom/stateless-graph/types"
 	"github.com/wisdomatom/stateless-graph/x"
 )
@@ -32,13 +30,10 @@ func TestReverseEdge(t *testing.T) {
 	bkv := x.NewBadgerKV(ps)
 	pstore = bkv
 	// Not using posting list cache
-	posting.Init(bkv, 0, false)
-	Init(bkv)
-	err = schema.ParseBytes([]byte("revc: [uid] @reverse @count ."), 1)
 	require.NoError(t, err)
 
 	ctx := context.Background()
-	txn := posting.Oracle().RegisterStartTs(5)
+	txn := Oracle().RegisterStartTs(5)
 	attr := x.AttrInRootNamespace("revc")
 
 	edge := &pb.DirectedEdge{
@@ -70,13 +65,10 @@ func TestReverseEdgeSetDel(t *testing.T) {
 	bkv := x.NewBadgerKV(ps)
 	pstore = bkv
 	// Not using posting list cache
-	posting.Init(bkv, 0, false)
-	Init(bkv)
-	err = schema.ParseBytes([]byte("revc: [uid] @reverse @count ."), 1)
 	require.NoError(t, err)
 
 	ctx := context.Background()
-	txn := posting.Oracle().RegisterStartTs(5)
+	txn := Oracle().RegisterStartTs(5)
 	attr := x.AttrInRootNamespace("revc")
 
 	edgeDel := &pb.DirectedEdge{

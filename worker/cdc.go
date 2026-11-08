@@ -21,7 +21,6 @@ import (
 	"go.etcd.io/etcd/raft/v3/raftpb"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/wisdomatom/stateless-graph/posting"
 	"github.com/wisdomatom/stateless-graph/protos/pb"
 	"github.com/wisdomatom/stateless-graph/types"
 	"github.com/wisdomatom/stateless-graph/x"
@@ -457,14 +456,14 @@ func toCDCEvent(index uint64, mutation *pb.Mutations) []CDCEvent {
 
 		var val interface{}
 		switch {
-		case posting.TypeID(edge) == types.UidID:
+		case TypeID(edge) == types.UidID:
 			val = edge.ValueId
-		case posting.TypeID(edge) == types.PasswordID:
+		case TypeID(edge) == types.PasswordID:
 			val = "****"
 		default:
 			// convert to correct type
 			src := types.Val{Tid: types.BinaryID, Value: edge.Value}
-			if v, err := types.Convert(src, posting.TypeID(edge)); err == nil {
+			if v, err := types.Convert(src, TypeID(edge)); err == nil {
 				val = v.Value
 			} else {
 				glog.Errorf("error while converting value %v", err)
@@ -481,7 +480,7 @@ func toCDCEvent(index uint64, mutation *pb.Mutations) []CDCEvent {
 				Uid:       edge.Entity,
 				Attr:      attr,
 				Value:     val,
-				ValueType: posting.TypeID(edge).Name(),
+				ValueType: TypeID(edge).Name(),
 			},
 		})
 	}

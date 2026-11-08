@@ -35,7 +35,6 @@ import (
 	"github.com/dgraph-io/badger/v4/y"
 	"github.com/wisdomatom/stateless-graph/codec"
 	"github.com/wisdomatom/stateless-graph/enc"
-	"github.com/wisdomatom/stateless-graph/posting"
 	"github.com/wisdomatom/stateless-graph/protos/pb"
 	"github.com/wisdomatom/stateless-graph/schema"
 	"github.com/wisdomatom/stateless-graph/tok/hnsw"
@@ -374,7 +373,7 @@ func (m *mapper) processReqCh(ctx context.Context) error {
 				return errors.Wrapf(err, "while reading backup posting list")
 			}
 
-			pl := posting.FromBackupPostingList(backupPl)
+			pl := FromBackupPostingList(backupPl)
 			defer codec.FreePack(pl.Pack)
 
 			shouldSplit := proto.Size(pl) >= (1<<20)/2 && len(pl.Pack.Blocks) > 1
@@ -385,7 +384,7 @@ func (m *mapper) processReqCh(ctx context.Context) error {
 				// part without rolling the key first. This part is here for backwards
 				// compatibility. New backups are not affected because there was a change
 				// to roll up lists into a single one.
-				newKv := posting.MarshalPostingList(pl, nil)
+				newKv := MarshalPostingList(pl, nil)
 				newKv.Key = restoreKey
 
 				// We are using kv.Version (from the key-value) to generate the key. But, using
@@ -401,7 +400,7 @@ func (m *mapper) processReqCh(ctx context.Context) error {
 				// a list that is too big to be read back from disk.
 				// Rollup will take ownership of the Pack and will free the memory.
 				// We do rollup at math.MaxUint64 so that we don't change the timestamps.
-				l := posting.NewList(restoreKey, pl, kv.Version)
+				l := NewList(restoreKey, pl, kv.Version)
 				kvs, err := l.Rollup(nil, math.MaxUint64)
 				if err != nil {
 					// TODO: wrap errors in this file for easier debugging.

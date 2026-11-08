@@ -15,7 +15,6 @@ import (
 	"github.com/golang/glog"
 
 	"github.com/dgraph-io/badger/v4"
-	"github.com/wisdomatom/stateless-graph/posting"
 	"github.com/wisdomatom/stateless-graph/raftwal"
 	"github.com/wisdomatom/stateless-graph/x"
 	"github.com/dgraph-io/ristretto/v2/z"
@@ -264,13 +263,13 @@ func (s *ServerState) GetTimestamp(readOnly bool) uint64 {
 	}
 	// We need to update MaxAssigned so that queries/mutations don't hang in WaitForTs.
 	// TODO: For better visibility guarantees, this should be managed more carefully.
-	posting.Oracle().SetMaxAssigned(ts)
+	Oracle().SetMaxAssigned(ts)
 	return ts
 }
 
 func (s *ServerState) AllocateStartTs() uint64 {
 	ts := s.Pstore.AllocateStartTs()
-	posting.Oracle().SetMaxAssigned(ts)
+	Oracle().SetMaxAssigned(ts)
 	return ts
 }
 

@@ -21,8 +21,7 @@ package worker
 // "github.com/stretchr/testify/require"
 // "google.golang.org/grpc"
 
-// "github.com/wisdomatom/stateless-graph/posting"
-// "github.com/wisdomatom/stateless-graph/protos/pb"
+//// "github.com/wisdomatom/stateless-graph/protos/pb"
 // "github.com/wisdomatom/stateless-graph/x"
 // )
 
@@ -50,7 +49,7 @@ package worker
 // func writePLs(t *testing.T, pred string, startIdx int, count int, vid uint64) {
 // 	for i := 0; i < count; i++ {
 // 		k := x.DataKey(pred, uint64(i+startIdx))
-// 		list, err := posting.GetNoStore(k)
+// 		list, err := GetNoStore(k)
 // 		require.NoError(t, err)
 
 // 		de := &pb.DirectedEdge{
@@ -126,7 +125,7 @@ package worker
 //		t.Fatal(err)
 //	}
 //	defer psLeader.Close()
-//	posting.Init(psLeader)
+//	Init(psLeader)
 //	Init(psLeader)
 //
 //	writePLs(t, "name", 0, 100, 2)
@@ -171,7 +170,7 @@ package worker
 //		t.Fatalf("Expected key to be: %v. Got %v", "099", string(k))
 //	}
 //
-//	l := posting.Get(k)
+//	l := Get(k)
 //	if l.Length(0, math.MaxUint64) != 1 {
 //		t.Error("Unable to find added elements in posting list")
 //	}
@@ -294,7 +293,7 @@ func TestJoinCluster(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ps.Close()
-	posting.Init(ps)
+	Init(ps)
 
 	writePLs(t, 100, 2, ps)
 
@@ -352,7 +351,7 @@ func TestJoinCluster(t *testing.T) {
  *    t.Fatal(err)
  *  }
  *  defer ps.Close()
- *  posting.Init(ps)
+ *  Init(ps)
  *  Init(ps)
  *
  *  require.Equal(t, uint32(0), group.BelongsTo("pred0"))

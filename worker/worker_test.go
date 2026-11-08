@@ -22,7 +22,6 @@ import (
 	"github.com/dgraph-io/badger/v4"
 	"github.com/dgraph-io/dgo/v250"
 	"github.com/dgraph-io/dgo/v250/protos/api"
-	"github.com/wisdomatom/stateless-graph/posting"
 	"github.com/wisdomatom/stateless-graph/protos/pb"
 	"github.com/wisdomatom/stateless-graph/schema"
 	"github.com/wisdomatom/stateless-graph/testutil"
@@ -37,13 +36,13 @@ func commitTs(startTs uint64) uint64 {
 		MaxAssigned: atomic.LoadUint64(&ts),
 	}
 	od.Txns = append(od.Txns, &pb.TxnStatus{StartTs: startTs, CommitTs: commit})
-	posting.Oracle().ProcessDelta(od)
+	Oracle().ProcessDelta(od)
 	return commit
 }
 
-func commitTransaction(t *testing.T, edge *pb.DirectedEdge, l *posting.List) {
+func commitTransaction(t *testing.T, edge *pb.DirectedEdge, l *List) {
 	startTs := timestamp()
-	txn := posting.Oracle().RegisterStartTs(startTs)
+	txn := Oracle().RegisterStartTs(startTs)
 	l = txn.Store(l)
 	l.SetTs(startTs)
 	require.NoError(t, l.AddMutationWithIndex(context.Background(), edge, txn))
@@ -51,7 +50,7 @@ func commitTransaction(t *testing.T, edge *pb.DirectedEdge, l *posting.List) {
 	commit := commitTs(startTs)
 
 	txn.Update()
-	writer := posting.NewTxnWriter(pstore)
+	writer := NewTxnWriter(pstore)
 	require.NoError(t, txn.CommitToDisk(writer, commit))
 	require.NoError(t, writer.Flush())
 }
@@ -60,12 +59,12 @@ func timestamp() uint64 {
 	return atomic.AddUint64(&ts, 1)
 }
 
-func addEdge(t *testing.T, edge *pb.DirectedEdge, l *posting.List) {
+func addEdge(t *testing.T, edge *pb.DirectedEdge, l *List) {
 	edge.Op = pb.DirectedEdge_SET
 	commitTransaction(t, edge, l)
 }
 
-func delEdge(t *testing.T, edge *pb.DirectedEdge, l *posting.List) {
+func delEdge(t *testing.T, edge *pb.DirectedEdge, l *List) {
 	edge.Op = pb.DirectedEdge_DEL
 	commitTransaction(t, edge, l)
 }
@@ -80,9 +79,9 @@ func delClusterEdge(t *testing.T, dg *dgo.Dgraph, rdf string) {
 	mu := &api.Mutation{DelNquads: []byte(rdf), CommitNow: true}
 	require.NoError(t, testutil.RetryMutation(dg, mu))
 }
-func getOrCreate(key []byte) *posting.List {
-	l, err := posting.GetNoStore(key, math.MaxUint64)
-	x.Checkf(err, "While calling posting.Get")
+func getOrCreate(key []byte) *List {
+	l, err := GetNoStore(key, math.MaxUint64)
+	x.Checkf(err, "While calling Get")
 	return l
 }
 
@@ -501,7 +500,7 @@ func TestProcessTaskIndex(t *testing.T) {
 }
 
 func TestMain(m *testing.M) {
-	posting.Config.CommitFraction = 0.10
+	Config.CommitFraction = 0.10
 	gr = new(groupi)
 	gr.gid = 1
 	gr.tablets = make(map[string]*pb.Tablet)
@@ -526,7 +525,6 @@ func TestMain(m *testing.M) {
 	x.Check(err)
 	pstore = ps
 	// Not using posting list cache
-	posting.Init(ps, 0, false)
 	Init(ps)
 
 	m.Run()

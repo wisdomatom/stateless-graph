@@ -12,7 +12,6 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/wisdomatom/stateless-graph/algo"
-	"github.com/wisdomatom/stateless-graph/posting"
 	"github.com/wisdomatom/stateless-graph/protos/pb"
 	"github.com/wisdomatom/stateless-graph/tok"
 	"github.com/wisdomatom/stateless-graph/x"
@@ -24,7 +23,7 @@ var errRegexTooWide = errors.New(
 func uidsForRegex(attr string, arg funcArgs,
 	query *cindex.Query, intersect *pb.List) (*pb.List, error) {
 	var results *pb.List
-	opts := posting.ListOptions{
+	opts := ListOptions{
 		ReadTs:   arg.q.ReadTs,
 		First:    int(arg.q.First),
 		AfterUid: arg.q.AfterUid,
@@ -35,7 +34,7 @@ func uidsForRegex(attr string, arg funcArgs,
 
 	uidsForTrigram := func(trigram string) (*pb.List, error) {
 		key := x.IndexKey(attr, trigram)
-		pl, err := posting.GetNoStore(key, arg.q.ReadTs)
+		pl, err := GetNoStore(key, arg.q.ReadTs)
 		if err != nil {
 			return nil, err
 		}

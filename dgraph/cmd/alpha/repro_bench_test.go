@@ -19,7 +19,7 @@ import (
 	"github.com/dgraph-io/dgo/v250/protos/api"
 
 	"github.com/wisdomatom/stateless-graph/edgraph"
-	"github.com/wisdomatom/stateless-graph/posting"
+	"github.com/wisdomatom/stateless-graph/worker"
 	"github.com/wisdomatom/stateless-graph/x"
 )
 
@@ -286,7 +286,7 @@ func TestConcurrentPostingMerge(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	posting.ResetCache()
+	worker.ResetCache()
 
 	query := fmt.Sprintf(`{
 		users(func: eq(User.group, "%s")) {

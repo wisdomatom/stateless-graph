@@ -19,7 +19,6 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/wisdomatom/stateless-graph/algo"
-	"github.com/wisdomatom/stateless-graph/posting"
 	"github.com/wisdomatom/stateless-graph/protos/pb"
 	"github.com/wisdomatom/stateless-graph/schema"
 	"github.com/wisdomatom/stateless-graph/storage/flat"
@@ -507,7 +506,7 @@ func processSort(ctx context.Context, ts *pb.SortMessage) (*pb.SortResult, error
 		attribute.Int("startTs", int(ts.ReadTs)),
 	)
 
-	if err := posting.Oracle().WaitForTs(ctx, ts.ReadTs); err != nil {
+	if err := Oracle().WaitForTs(ctx, ts.ReadTs); err != nil {
 		return nil, err
 	}
 	span.SetAttributes(
@@ -635,7 +634,7 @@ func intersectBucket(ctx context.Context, ts *pb.SortMessage, token string,
 
 	key := x.IndexKey(order.Attr, token)
 	// Don't put the Index keys in memory.
-	pl, err := posting.GetNoStore(key, ts.GetReadTs())
+	pl, err := GetNoStore(key, ts.GetReadTs())
 	if err != nil {
 		return err
 	}
@@ -652,7 +651,7 @@ func intersectBucket(ctx context.Context, ts *pb.SortMessage, token string,
 		}
 
 		// Intersect index with i-th input UID list.
-		listOpt := posting.ListOptions{
+		listOpt := ListOptions{
 			Intersect: ul,
 			ReadTs:    ts.ReadTs,
 			First:     0, // TODO: Should we set the first N here?
@@ -853,7 +852,7 @@ func fetchValue(uid uint64, attr string, langs []string, scalar types.TypeID,
 			return types.Val{}, err
 		}
 		if len(valBytes) == 0 {
-			return types.Val{}, posting.ErrNoValue
+			return types.Val{}, ErrNoValue
 		}
 		src := types.Val{Tid: types.TypeID(valType), Value: valBytes}
 		dst, err := types.Convert(src, scalar)
@@ -864,7 +863,7 @@ func fetchValue(uid uint64, attr string, langs []string, scalar types.TypeID,
 	}
 
 	// Don't put the values in memory
-	pl, err := posting.GetNoStore(x.DataKey(attr, uid), readTs)
+	pl, err := GetNoStore(x.DataKey(attr, uid), readTs)
 	if err != nil {
 		return types.Val{}, err
 	}

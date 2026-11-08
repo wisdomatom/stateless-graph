@@ -21,9 +21,9 @@ import (
 
 	"github.com/dgraph-io/badger/v4"
 	"github.com/dgraph-io/dgo/v250"
-	"github.com/wisdomatom/stateless-graph/posting"
 	"github.com/wisdomatom/stateless-graph/protos/pb"
 	"github.com/wisdomatom/stateless-graph/types"
+	"github.com/wisdomatom/stateless-graph/worker"
 	"github.com/wisdomatom/stateless-graph/x"
 )
 
@@ -159,7 +159,7 @@ func GetPredicateValues(pdir, attr string, readTs uint64) (map[string]string, er
 			continue
 		}
 
-		pl, err := posting.ReadPostingList(item.Key(), nil)
+		pl, err := worker.ReadPostingList(item.Key(), nil)
 		if err != nil {
 			return nil, err
 		}

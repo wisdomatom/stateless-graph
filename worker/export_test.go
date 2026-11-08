@@ -30,7 +30,6 @@ import (
 	"github.com/wisdomatom/stateless-graph/chunker"
 	"github.com/wisdomatom/stateless-graph/dql"
 	"github.com/wisdomatom/stateless-graph/lex"
-	"github.com/wisdomatom/stateless-graph/posting"
 	"github.com/wisdomatom/stateless-graph/protos/pb"
 	"github.com/wisdomatom/stateless-graph/schema"
 	"github.com/wisdomatom/stateless-graph/testutil"
@@ -239,7 +238,7 @@ func TestExportRdf(t *testing.T) {
 	x.WorkerConfig.ExportPath = bdir
 	readTs := timestamp()
 	// Do the following so export won't block forever for readTs.
-	posting.Oracle().ProcessDelta(&pb.OracleDelta{MaxAssigned: readTs})
+	Oracle().ProcessDelta(&pb.OracleDelta{MaxAssigned: readTs})
 	files, err := export(context.Background(), &pb.ExportRequest{ReadTs: readTs, GroupId: 1,
 		Namespace: math.MaxUint64, Format: "rdf"})
 	require.NoError(t, err)
@@ -338,7 +337,7 @@ func TestExportJson(t *testing.T) {
 	x.WorkerConfig.ExportPath = bdir
 	readTs := timestamp()
 	// Do the following so export won't block forever for readTs.
-	posting.Oracle().ProcessDelta(&pb.OracleDelta{MaxAssigned: readTs})
+	Oracle().ProcessDelta(&pb.OracleDelta{MaxAssigned: readTs})
 	req := pb.ExportRequest{ReadTs: readTs, GroupId: 1, Format: "json", Namespace: math.MaxUint64}
 	files, err := export(context.Background(), &req)
 	require.NoError(t, err)

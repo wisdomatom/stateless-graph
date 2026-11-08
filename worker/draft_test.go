@@ -12,7 +12,6 @@ import (
 	"go.etcd.io/etcd/raft/v3/raftpb"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/wisdomatom/stateless-graph/posting"
 	"github.com/wisdomatom/stateless-graph/protos/pb"
 	"github.com/wisdomatom/stateless-graph/raftwal"
 	"github.com/wisdomatom/stateless-graph/x"
@@ -52,8 +51,8 @@ func TestCalculateSnapshot(t *testing.T) {
 		getEntryForMutation(3, 2), getEntryForCommit(4, 3, 4), getEntryForCommit(5, 1, 5))
 	require.NoError(t, n.Store.Save(&raftpb.HardState{}, entries, &raftpb.Snapshot{}))
 	n.Applied.SetDoneUntil(5)
-	posting.Oracle().RegisterStartTs(2)
-	snap, err := n.calculateSnapshot(0, n.Applied.DoneUntil(), posting.Oracle().MinPendingStartTs())
+	Oracle().RegisterStartTs(2)
+	snap, err := n.calculateSnapshot(0, n.Applied.DoneUntil(), Oracle().MinPendingStartTs())
 	require.NoError(t, err)
 	require.Equal(t, uint64(5), snap.ReadTs)
 	require.Equal(t, uint64(1), snap.Index)
@@ -78,8 +77,8 @@ func TestCalculateSnapshot(t *testing.T) {
 		getEntryForCommit(8, 2, 9))
 	require.NoError(t, n.Store.Save(&raftpb.HardState{}, entries, &raftpb.Snapshot{}))
 	n.Applied.SetDoneUntil(8)
-	posting.Oracle().ResetTxns()
-	snap, err = n.calculateSnapshot(0, n.Applied.DoneUntil(), posting.Oracle().MinPendingStartTs())
+	Oracle().ResetTxns()
+	snap, err = n.calculateSnapshot(0, n.Applied.DoneUntil(), Oracle().MinPendingStartTs())
 	require.NoError(t, err)
 	require.Equal(t, uint64(9), snap.ReadTs)
 	require.Equal(t, uint64(8), snap.Index)
@@ -94,7 +93,7 @@ func TestCalculateSnapshot(t *testing.T) {
 	entries = append(entries, getEntryForMutation(9, 11))
 	require.NoError(t, n.Store.Save(&raftpb.HardState{}, entries, &raftpb.Snapshot{}))
 	n.Applied.SetDoneUntil(9)
-	snap, err = n.calculateSnapshot(0, n.Applied.DoneUntil(), posting.Oracle().MinPendingStartTs())
+	snap, err = n.calculateSnapshot(0, n.Applied.DoneUntil(), Oracle().MinPendingStartTs())
 	require.NoError(t, err)
 	require.Nil(t, snap)
 }
