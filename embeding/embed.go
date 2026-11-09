@@ -222,7 +222,7 @@ func (r *EmbedDgraph) dAlpha(conf DgraphServer, lis *bufconn.Listener) {
 		}
 	}()
 
-	worker.StartRaftNodes(worker.State.WALstore, false)
+	worker.StartRaftNodes(false)
 	// Store the engine as the active instance
 	x.UpdateHealthStatus(true)
 }

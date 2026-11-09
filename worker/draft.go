@@ -34,7 +34,6 @@ import (
 	bpb "github.com/dgraph-io/badger/v4/pb"
 	"github.com/wisdomatom/stateless-graph/conn"
 	"github.com/wisdomatom/stateless-graph/protos/pb"
-	"github.com/wisdomatom/stateless-graph/raftwal"
 	"github.com/wisdomatom/stateless-graph/schema"
 	"github.com/wisdomatom/stateless-graph/types"
 	"github.com/wisdomatom/stateless-graph/x"
@@ -252,7 +251,7 @@ func GetOngoingTasks() []string {
 // Now that we apply txn updates via Raft, waiting based on Txn timestamps is
 // sufficient. We don't need to wait for proposals to be applied.
 
-func newNode(store *raftwal.DiskStorage, gid uint32, id uint64, myAddr string) *node {
+func newNode(store conn.RaftStorage, gid uint32, id uint64, myAddr string) *node {
 	glog.Infof("Node ID: %#x with GroupID: %d\n", id, gid)
 
 	isLearner := x.WorkerConfig.Raft.GetBool("learner")
@@ -1171,23 +1170,6 @@ func rampMeter(address *int64, maxSize int64, component string) {
 }
 
 func (n *node) updateRaftProgress() error {
-	// Both leader and followers can independently update their Raft progress. We don't store
-	// this in Raft WAL. Instead, this is used to just skip over log records that this Alpha
-	// has already applied, to speed up things on a restart.
-	//
-	// Let's check what we already have. And only update if the new snap.Index is ahead of the last
-	// stored applied.
-	applied := n.Store.Uint(raftwal.CheckpointIndex)
-
-	snap, err := n.calculateSnapshot(applied, n.Applied.DoneUntil(),
-		Oracle().MinPendingStartTs())
-	if err != nil || snap == nil || snap.Index <= applied {
-		return err
-	}
-	atomic.StoreUint64(&n.checkpointTs, snap.ReadTs)
-
-	n.Store.SetUint(raftwal.CheckpointIndex, snap.GetIndex())
-	glog.V(2).Infof("[%#x] Set Raft progress to index: %d, ts: %d.", n.Id, snap.Index, snap.ReadTs)
 	return nil
 }
 

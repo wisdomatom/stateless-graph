@@ -20,7 +20,6 @@ import (
 
 	"github.com/wisdomatom/stateless-graph/conn"
 	"github.com/wisdomatom/stateless-graph/protos/pb"
-	"github.com/wisdomatom/stateless-graph/raftwal"
 	"github.com/wisdomatom/stateless-graph/x"
 	"github.com/dgraph-io/ristretto/v2/z"
 )
@@ -37,7 +36,7 @@ func TaskStatusOverNetwork(ctx context.Context, req *pb.TaskStatusRequest,
 	raftId := taskId >> 32
 
 	// Skip the network call if the required Alpha is me.
-	myRaftId := State.WALstore.Uint(raftwal.RaftId)
+	myRaftId := uint64(1)
 	if raftId == myRaftId {
 		worker := (*grpcWorker)(nil)
 		return worker.TaskStatus(ctx, req)
@@ -289,7 +288,7 @@ func (t *tasks) cleanup() {
 // 32 bits: raft ID
 // 32 bits: random number
 func (t *tasks) newId() uint64 {
-	myRaftId := State.WALstore.Uint(raftwal.RaftId)
+	myRaftId := uint64(1)
 	for {
 		id := myRaftId<<32 | uint64(t.rng.Uint32())
 		// z.Tree cannot store 0 or math.MaxUint64. Check that id is unique.

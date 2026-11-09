@@ -768,7 +768,7 @@ func run() {
 
 	updaters := z.NewCloser(1)
 	go func() {
-		worker.StartRaftNodes(worker.State.WALstore, bindall)
+		worker.StartRaftNodes(bindall)
 		atomic.AddUint32(&initDone, 1)
 	}()
 

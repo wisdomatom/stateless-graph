@@ -22,7 +22,6 @@ import (
 	"github.com/dgraph-io/dgo/v250/protos/api"
 	"github.com/wisdomatom/stateless-graph/conn"
 	"github.com/wisdomatom/stateless-graph/protos/pb"
-	"github.com/wisdomatom/stateless-graph/raftwal"
 	"github.com/wisdomatom/stateless-graph/schema"
 	"github.com/wisdomatom/stateless-graph/x"
 	"github.com/dgraph-io/ristretto/v2/z"
@@ -58,7 +57,7 @@ func groups() *groupi {
 // and either start or restart RAFT nodes.
 // This function triggers RAFT nodes to be created, and is the entrance to the RAFT
 // world from main.go.
-func StartRaftNodes(walStore *raftwal.DiskStorage, bindall bool) {
+func StartRaftNodes(bindall bool) {
 	if x.WorkerConfig.MyAddr == "" {
 		x.WorkerConfig.MyAddr = fmt.Sprintf("localhost:%d", workerPort())
 	}

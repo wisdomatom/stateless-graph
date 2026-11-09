@@ -15,7 +15,6 @@ import (
 	"github.com/golang/glog"
 
 	"github.com/dgraph-io/badger/v4"
-	"github.com/wisdomatom/stateless-graph/raftwal"
 	"github.com/wisdomatom/stateless-graph/x"
 	"github.com/dgraph-io/ristretto/v2/z"
 )
@@ -50,7 +49,6 @@ type ServerState struct {
 	FinishCh chan struct{} // channel to wait for all pending reqs to finish.
 
 	Pstore   x.KVDB
-	WALstore *raftwal.DiskStorage
 	gcCloser *z.Closer // closer for valueLogGC
 
 	needTs chan tsReq
@@ -93,18 +91,10 @@ func setBadgerOptions(opt badger.Options) badger.Options {
 }
 
 func (s *ServerState) InitStorage() {
-	var err error
-
 	if x.WorkerConfig.EncryptionKey != nil {
 		glog.Infof("Encryption feature enabled.")
 	}
 
-	{
-		// Write Ahead Log directory
-		x.Checkf(os.MkdirAll(Config.WALDir, 0700), "Error while creating WAL dir.")
-		s.WALstore, err = raftwal.InitEncrypted(Config.WALDir, x.WorkerConfig.EncryptionKey)
-		x.Check(err)
-	}
 	{
 		// Postings directory
 		// All the writes to posting store should be synchronous. We use batched writers
@@ -245,9 +235,6 @@ func (s *ServerState) Dispose() {
 	s.gcCloser.SignalAndWait()
 	if err := s.Pstore.Close(); err != nil {
 		glog.Errorf("Error while closing postings store: %v", err)
-	}
-	if err := s.WALstore.Close(); err != nil {
-		glog.Errorf("Error while closing WAL store: %v", err)
 	}
 }
 

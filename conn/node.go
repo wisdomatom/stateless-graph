@@ -30,7 +30,6 @@ import (
 	"github.com/dgraph-io/badger/v4/y"
 	"github.com/dgraph-io/dgo/v250/protos/api"
 	"github.com/wisdomatom/stateless-graph/protos/pb"
-	"github.com/wisdomatom/stateless-graph/raftwal"
 	"github.com/wisdomatom/stateless-graph/x"
 	"github.com/dgraph-io/ristretto/v2/z"
 )
@@ -39,6 +38,17 @@ var (
 	// ErrNoNode is returned when no node has been set up.
 	ErrNoNode = errors.Errorf("No node has been set up yet")
 )
+
+type RaftStorage interface {
+	raft.Storage
+	Save(h *raftpb.HardState, es []raftpb.Entry, s *raftpb.Snapshot) error
+	HardState() (raftpb.HardState, error)
+	NumEntries() int
+	CreateSnapshot(index uint64, cs *raftpb.ConfState, data []byte) error
+	NumLogFiles() int
+	Checkpoint() (uint64, error)
+	Sync() error
+}
 
 // Node represents a node participating in the RAFT protocol.
 type Node struct {
@@ -68,7 +78,7 @@ type Node struct {
 	confChanges     map[uint64]chan error
 	messages        chan sendmsg
 	RaftContext     *pb.RaftContext
-	Store           *raftwal.DiskStorage
+	Store           RaftStorage
 	Rand            *rand.Rand
 	tlsClientConfig *tls.Config
 
@@ -79,7 +89,7 @@ type Node struct {
 }
 
 // NewNode returns a new Node instance.
-func NewNode(rc *pb.RaftContext, store *raftwal.DiskStorage, tlsConfig *tls.Config) *Node {
+func NewNode(rc *pb.RaftContext, store RaftStorage, tlsConfig *tls.Config) *Node {
 	snap, err := store.Snapshot()
 	x.Check(err)
 
