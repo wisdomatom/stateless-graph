@@ -149,7 +149,9 @@ type WorkerOptions struct {
 }
 
 // WorkerConfig stores the global instance of the worker package's options.
-var WorkerConfig WorkerOptions
+var WorkerConfig WorkerOptions = WorkerOptions{
+	UseFlatStorage: true,
+}
 
 func (w *WorkerOptions) Parse(conf *viper.Viper) {
 	w.MyAddr = conf.GetString("my")

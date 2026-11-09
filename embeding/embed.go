@@ -91,7 +91,8 @@ func NewDgraphEmbed(conf DgraphServer) (*EmbedDgraph, error) {
 	x.WorkerConfig.HardSync = false
 	x.WorkerConfig.TiKVAddrs = conf.TiKVAddrs
 	x.WorkerConfig.Embedded = true
-	x.WorkerConfig.UseFlatStorage = conf.UseFlatStorage
+	// Flat storage is mandatory since the legacy posting package was removed.
+	x.WorkerConfig.UseFlatStorage = true
 
 	ed := &EmbedDgraph{
 		lock:   &sync.Mutex{},
