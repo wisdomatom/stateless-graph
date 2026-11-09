@@ -36,7 +36,6 @@ import (
 
 	"github.com/dgraph-io/badger/v4"
 	"github.com/dgraph-io/dgo/v250/protos/api"
-	"github.com/wisdomatom/stateless-graph/audit"
 	"github.com/wisdomatom/stateless-graph/edgraph"
 	"github.com/wisdomatom/stateless-graph/schema"
 	"github.com/wisdomatom/stateless-graph/tok"
@@ -453,7 +452,6 @@ func serveGRPC(l net.Listener, tlsCfg *tls.Config, closer *z.Closer) {
 		grpc.MaxSendMsgSize(x.GrpcMaxSize),
 		grpc.MaxConcurrentStreams(1000),
 		grpc.StatsHandler(otelgrpc.NewServerHandler()),
-		grpc.UnaryInterceptor(audit.AuditRequestGRPC),
 	}
 	if tlsCfg != nil {
 		tlsCfg.NextProtos = []string{"h2"}
@@ -493,7 +491,7 @@ func setupServer(closer *z.Closer) {
 	}
 
 	baseMux := http.NewServeMux()
-	http.Handle("/", audit.AuditRequestHttp(baseMux))
+	http.Handle("/", baseMux)
 
 	http.HandleFunc("/login", loginHandler)
 	baseMux.HandleFunc("/query", queryHandler)
@@ -570,15 +568,6 @@ func setupServer(closer *z.Closer) {
 	glog.Infoln("HTTP server started.  Listening on port", httpPort())
 
 	atomic.AddUint32(&initDone, 1)
-	// Audit needs groupId and nodeId to initialize audit files
-	// Therefore we wait for the cluster initialization to be done.
-	for {
-		if x.HealthCheck() == nil {
-			x.Check(audit.InitAuditorIfNecessary(worker.Config.Audit))
-			break
-		}
-		time.Sleep(500 * time.Millisecond)
-	}
 	x.ServerCloser.Wait()
 }
 
@@ -606,7 +595,6 @@ func run() {
 		FromSuperFlag(Alpha.Conf.GetString("badger"))
 	security := z.NewSuperFlag(Alpha.Conf.GetString("security")).MergeAndCheckDefault(
 		worker.SecurityDefaults)
-	conf := audit.GetAuditConf(Alpha.Conf.GetString("audit"))
 
 	x.Config.Limit = z.NewSuperFlag(Alpha.Conf.GetString("limit")).MergeAndCheckDefault(
 		worker.LimitDefaults)
@@ -620,7 +608,6 @@ func run() {
 
 		MutationsMode:      worker.AllowMutations,
 		AuthToken:          security.GetString("token"),
-		Audit:              conf,
 		ChangeDataConf:     Alpha.Conf.GetString("cdc"),
 		TypeFilterUidLimit: x.Config.Limit.GetUint64("type-filter-uid-limit"),
 	}
@@ -779,16 +766,10 @@ func run() {
 		}
 	}()
 
-	updaters := z.NewCloser(2)
+	updaters := z.NewCloser(1)
 	go func() {
 		worker.StartRaftNodes(worker.State.WALstore, bindall)
 		atomic.AddUint32(&initDone, 1)
-
-		// initialization of the admin account can only be done after raft nodes are running
-		// and health check passes
-		edgraph.InitializeAcl(updaters)
-		edgraph.RefreshACLs(updaters.Ctx())
-		edgraph.SubscribeForAclUpdates(updaters)
 	}()
 
 	// Graphql subscribes to alpha to get schema updates. We need to close that before we
@@ -807,8 +788,6 @@ func run() {
 
 	adminCloser.SignalAndWait()
 	glog.Infoln("adminCloser closed.")
-
-	audit.Close()
 
 	worker.State.Dispose()
 	glog.Info("worker.State disposed.")

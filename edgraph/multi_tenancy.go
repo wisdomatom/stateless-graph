@@ -115,19 +115,8 @@ func (s *Server) CreateNamespaceInternal(ctx context.Context, passwd string) (ui
 	return ns, nil
 }
 
-// This function is used while creating new namespace. New namespace creation is only allowed
-// by the guardians of the galaxy group.
+// This function is used while creating new namespace.
 func createGuardianAndGroot(ctx context.Context, passwd string) error {
-	if !x.WorkerConfig.AclEnabled {
-		return nil
-	}
-
-	if err := upsertGuardian(ctx); err != nil {
-		return errors.Wrap(err, "While creating Guardian")
-	}
-	if err := upsertGroot(ctx, passwd); err != nil {
-		return errors.Wrap(err, "While creating Groot")
-	}
 	return nil
 }
 

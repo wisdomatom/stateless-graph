@@ -212,11 +212,6 @@ func validateAlterOperation(ctx context.Context, op *api.Operation) error {
 		return err
 	}
 
-	if err := authorizeAlter(ctx, op); err != nil {
-		glog.Warningf("Alter denied with error: %v\n", err)
-		return err
-	}
-
 	return nil
 }
 
@@ -388,8 +383,6 @@ func (s *Server) Alter(ctx context.Context, op *api.Operation) (*api.Payload, er
 		// insert empty GraphQL schema, so all alphas get notified to
 		// reset their in-memory GraphQL schema
 		_, err = UpdateGQLSchema(ctx, "", "")
-		// recreate the admin account after a drop all operation
-		InitializeAcl(nil)
 		return empty, err
 	}
 
@@ -419,9 +412,6 @@ func (s *Server) Alter(ctx context.Context, op *api.Operation) (*api.Payload, er
 
 		// just reinsert the GraphQL schema, no need to alter dgraph schema as this was drop_data
 		_, err = UpdateGQLSchema(ctx, graphQLSchema, "")
-
-		// Since all data has been dropped, we need to recreate the admin account in the respective namespace.
-		upsertGuardianAndGroot(nil, namespace)
 		return empty, err
 	}
 
@@ -1539,9 +1529,6 @@ func processQuery(ctx context.Context, qc *queryContext) (*api.Response, error) 
 	}
 
 	if len(er.SchemaNode) > 0 || len(er.Types) > 0 {
-		if err = authorizeSchemaQuery(ctx, &er); err != nil {
-			return resp, err
-		}
 		sort.Slice(er.SchemaNode, func(i, j int) bool {
 			return er.SchemaNode[i].Predicate < er.SchemaNode[j].Predicate
 		})
@@ -1925,18 +1912,19 @@ func addQueryIfUnique(qctx context.Context, qc *queryContext) error {
 }
 
 func authorizeRequest(ctx context.Context, qc *queryContext) error {
-	if err := authorizeQuery(ctx, &qc.dqlRes, qc.graphql); err != nil {
-		return err
-	}
-
-	// TODO(Aman): can be optimized to do the authorization in just one func call
-	for _, gmu := range qc.gmuList {
-		if err := authorizeMutation(ctx, gmu); err != nil {
-			return err
-		}
-	}
-
 	return nil
+}
+
+func AuthSuperAdmin(ctx context.Context) error {
+	return nil
+}
+
+func AuthorizeGuardians(ctx context.Context) error {
+	return nil
+}
+
+func (s *Server) Login(ctx context.Context, req *api.LoginRequest) (*api.Response, error) {
+	return nil, errors.New("login not supported in stateless-graph")
 }
 
 func getHash(ns, startTs uint64) string {

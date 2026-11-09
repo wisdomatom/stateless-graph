@@ -422,7 +422,6 @@ func postStreamProcessing(ctx context.Context) error {
 
 	gr.informZeroAboutTablets()
 	ResetCache()
-	ResetAclCache()
 	groups().applyInitialSchema()
 	groups().applyInitialTypes()
 	ResetGQLSchemaStore()

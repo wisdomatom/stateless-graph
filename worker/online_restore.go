@@ -422,7 +422,6 @@ func handleRestoreProposal(ctx context.Context, req *pb.RestoreRequest, pidx uin
 	}
 
 	ResetCache()
-	ResetAclCache()
 	groups().applyInitialSchema()
 	groups().applyInitialTypes()
 
