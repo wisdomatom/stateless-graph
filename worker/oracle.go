@@ -305,6 +305,9 @@ func DeletePredicate(ctx context.Context, attr string, ts uint64) error {
 }
 
 func DeleteAll() error {
+	if State.Pstore != nil {
+		return State.Pstore.DropAll()
+	}
 	return nil
 }
 

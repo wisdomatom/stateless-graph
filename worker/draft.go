@@ -397,11 +397,15 @@ func (n *node) applyMutations(ctx context.Context, proposal *pb.Proposal) (rerr 
 		// Clear entire cache.
 		ResetCache()
 
-		// It should be okay to set the schema at timestamp 1 after drop all operation.
+		ts := State.GetTimestamp(false)
+		if ts == 0 {
+			ts = 1
+		}
+
 		if groups().groupId() == 1 {
 			initialSchema := schema.InitialSchema(x.RootNamespace)
 			for _, s := range initialSchema {
-				if err := applySchema(s, 1); err != nil {
+				if err := applySchema(s, ts); err != nil {
 					return err
 				}
 			}
@@ -410,7 +414,7 @@ func (n *node) applyMutations(ctx context.Context, proposal *pb.Proposal) (rerr 
 		// Propose initial types as well after a drop all as they would have been cleared.
 		initialTypes := schema.InitialTypes(x.RootNamespace)
 		for _, t := range initialTypes {
-			if err := updateType(t.GetTypeName(), t, 1); err != nil {
+			if err := updateType(t.GetTypeName(), t, ts); err != nil {
 				return err
 			}
 		}

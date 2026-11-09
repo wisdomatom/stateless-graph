@@ -112,8 +112,43 @@ func (t *tikvDB) DropPrefix(prefixes ...[]byte) error {
 }
 
 func (t *tikvDB) DropAll() error {
-	// Dangerous operation, but required by interface.
-	return t.DropPrefix([]byte{})
+	ctx := context.Background()
+	for {
+		txn, err := t.client.Begin()
+		if err != nil {
+			return err
+		}
+		it, err := txn.Iter([]byte{}, nil)
+		if err != nil {
+			_ = txn.Rollback()
+			return err
+		}
+
+		var keys [][]byte
+		for it.Valid() && len(keys) < 2000 {
+			k := make([]byte, len(it.Key()))
+			copy(k, it.Key())
+			keys = append(keys, k)
+			if err := it.Next(); err != nil {
+				break
+			}
+		}
+		it.Close()
+
+		if len(keys) == 0 {
+			_ = txn.Rollback()
+			break
+		}
+
+		for _, k := range keys {
+			_ = txn.Delete(k)
+		}
+
+		if err := txn.Commit(ctx); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (t *tikvDB) NewStreamAt(readTs uint64) KVStream {

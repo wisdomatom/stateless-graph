@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	"math"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -898,6 +899,70 @@ func typeSanityCheck(t *pb.TypeUpdate) error {
 }
 
 func applyMutations(ctx context.Context, m *pb.Mutations) error {
+	if m.DropOp == pb.Mutations_ALL {
+		Oracle().ResetTxns()
+		schema.State().DeleteAll()
+
+		if err := DeleteAll(); err != nil {
+			return err
+		}
+
+		ResetCache()
+
+		ts := State.GetTimestamp(false)
+		if ts == 0 {
+			ts = 1
+		}
+
+		if groups().groupId() == 1 {
+			initialSchema := schema.InitialSchema(x.RootNamespace)
+			for _, s := range initialSchema {
+				if err := applySchema(s, ts); err != nil {
+					return err
+				}
+			}
+		}
+
+		initialTypes := schema.InitialTypes(x.RootNamespace)
+		for _, t := range initialTypes {
+			if err := updateType(t.GetTypeName(), t, ts); err != nil {
+				return err
+			}
+		}
+
+		return nil
+	}
+
+	if m.DropOp == pb.Mutations_ALL_IN_NS {
+		ns, err := strconv.ParseUint(m.DropValue, 0, 64)
+		if err != nil {
+			return err
+		}
+		Oracle().ResetTxnsForNs(ns)
+		if err := DeleteAllForNs(ns); err != nil {
+			return err
+		}
+		ResetCache()
+		return nil
+	}
+
+	if m.DropOp == pb.Mutations_DATA {
+		ns, err := strconv.ParseUint(m.DropValue, 0, 64)
+		if err != nil {
+			return err
+		}
+		Oracle().ResetTxnsForNs(ns)
+		if err := DeleteData(ns); err != nil {
+			return err
+		}
+		ResetCache()
+		return nil
+	}
+
+	if m.DropOp == pb.Mutations_TYPE {
+		return schema.State().DeleteType(m.DropValue, m.StartTs)
+	}
+
 	if m.StartTs == 0 {
 		return errors.Errorf("StartTs cannot be zero")
 	}
