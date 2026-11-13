@@ -30,6 +30,7 @@ type tikvDB struct {
 
 var logOnce sync.Once
 var tikvTxns sync.Map
+var activeTikvTxns sync.Map // map[uint64]*tikvTxn
 
 func NewTiKVKV(pdAddrs []string) (KVDB, error) {
 	logOnce.Do(func() {
@@ -60,10 +61,45 @@ func (t *tikvDB) AllocateStartTs() uint64 {
 
 func (t *tikvDB) NewTransactionAt(readTs uint64, update bool) KVTxn {
 	if update {
-		if v, ok := tikvTxns.LoadAndDelete(readTs); ok {
-			return &tikvTxn{txn: v.(*transaction.KVTxn)}
+		if readTs > 0 && readTs < math.MaxUint64 {
+			if v, ok := activeTikvTxns.Load(readTs); ok {
+				return v.(*tikvTxn)
+			}
+		}
+		var txn *transaction.KVTxn
+		var err error
+		if readTs > 0 && readTs < math.MaxUint64 {
+			txn, err = t.client.Begin(tikv.WithStartTS(readTs))
+		} else {
+			txn, err = t.client.Begin()
+		}
+		if err != nil {
+			panic(errors.Wrap(err, "failed to begin tikv transaction in NewTransactionAt"))
+		}
+		txn.SetEnable1PC(true)
+		txn.SetEnableAsyncCommit(true)
+		tx := &tikvTxn{
+			txn:     txn,
+			ts:      txn.StartTS(),
+			db:      t,
+			isWrite: true,
+		}
+		if readTs > 0 && readTs < math.MaxUint64 {
+			activeTikvTxns.Store(readTs, tx)
+		}
+		if tx.ts > 0 {
+			activeTikvTxns.Store(tx.ts, tx)
+		}
+		return tx
+	}
+
+	// update == false: read-only query
+	if readTs > 0 && readTs < math.MaxUint64 {
+		if v, ok := activeTikvTxns.Load(readTs); ok {
+			return &tikvSharedReadTxn{parent: v.(*tikvTxn)}
 		}
 	}
+
 	var txn *transaction.KVTxn
 	var err error
 	if readTs > 0 && readTs < math.MaxUint64 {
@@ -74,11 +110,12 @@ func (t *tikvDB) NewTransactionAt(readTs uint64, update bool) KVTxn {
 	if err != nil {
 		panic(errors.Wrap(err, "failed to begin tikv transaction in NewTransactionAt"))
 	}
-	if update {
-		txn.SetEnable1PC(true)
-		txn.SetEnableAsyncCommit(true)
+	return &tikvTxn{
+		txn:     txn,
+		ts:      txn.StartTS(),
+		db:      t,
+		isWrite: false,
 	}
-	return &tikvTxn{txn: txn}
 }
 
 func (t *tikvDB) Close() error {
@@ -112,6 +149,10 @@ func (t *tikvDB) DropPrefix(prefixes ...[]byte) error {
 }
 
 func (t *tikvDB) DropAll() error {
+	activeTikvTxns.Range(func(k, v interface{}) bool {
+		activeTikvTxns.Delete(k)
+		return true
+	})
 	ctx := context.Background()
 	for {
 		txn, err := t.client.Begin()
@@ -339,16 +380,23 @@ type tikvInternalIterator interface {
 }
 
 type tikvTxn struct {
-	txn *transaction.KVTxn
+	sync.RWMutex
+	txn     *transaction.KVTxn
+	ts      uint64
+	db      *tikvDB
+	isWrite bool
 }
 
 func (tx *tikvTxn) Get(key []byte) (KVItem, error) {
+	tx.RLock()
+	defer tx.RUnlock()
+	return tx.getNoLock(key)
+}
+
+func (tx *tikvTxn) getNoLock(key []byte) (KVItem, error) {
 	val, err := tx.txn.Get(context.Background(), key)
 	if err != nil {
-		if err.Error() == "not found" { // Need to verify TiKV not found error string or type
-			return nil, ErrKeyNotFound
-		}
-		if err.Error() == "not exist" {
+		if err.Error() == "not found" || err.Error() == "not exist" {
 			return nil, ErrKeyNotFound
 		}
 		return nil, err
@@ -357,6 +405,12 @@ func (tx *tikvTxn) Get(key []byte) (KVItem, error) {
 }
 
 func (tx *tikvTxn) BatchGet(keys [][]byte) (map[string][]byte, error) {
+	tx.RLock()
+	defer tx.RUnlock()
+	return tx.batchGetNoLock(keys)
+}
+
+func (tx *tikvTxn) batchGetNoLock(keys [][]byte) (map[string][]byte, error) {
 	if len(keys) == 0 {
 		return make(map[string][]byte), nil
 	}
@@ -376,24 +430,22 @@ func (tx *tikvTxn) BatchGet(keys [][]byte) (map[string][]byte, error) {
 }
 
 func (tx *tikvTxn) Set(key, val []byte) error {
-	// Use 0 as default meta
-	return tx.SetWithMeta(key, val, 0)
+	tx.Lock()
+	defer tx.Unlock()
+	return tx.setWithMetaNoLock(key, val, 0)
 }
 
 func (tx *tikvTxn) SetWithMeta(key, val []byte, meta byte) error {
-	// Protocol: [1-byte Meta] + [1-byte Reserved] + [Payload]
+	tx.Lock()
+	defer tx.Unlock()
+	return tx.setWithMetaNoLock(key, val, meta)
+}
+
+func (tx *tikvTxn) setWithMetaNoLock(key, val []byte, meta byte) error {
 	buf := make([]byte, 2+len(val))
 	buf[0] = meta
 	buf[1] = 0 // Reserved
 	copy(buf[2:], val)
-
-	// if tx.txn.IsPessimistic() {
-	// 	// Lock the key first in pessimistic mode to ensure queuing
-	// 	if err := tx.txn.LockKeys(context.Background(), &kv.LockCtx{}, key); err != nil {
-	// 		return err
-	// 	}
-	// }
-
 	return tx.txn.Set(key, buf)
 }
 
@@ -406,11 +458,17 @@ func (tx *tikvTxn) SetEntry(e *badger.Entry) error {
 }
 
 func (tx *tikvTxn) Delete(key []byte) error {
+	tx.Lock()
+	defer tx.Unlock()
 	return tx.txn.Delete(key)
 }
 
 func (tx *tikvTxn) CommitAt(commitTs uint64, callback func(error)) error {
-	// TiKV manages its own commitTS.
+	tx.Lock()
+	defer tx.Unlock()
+	if tx.isWrite && tx.ts > 0 {
+		activeTikvTxns.Delete(tx.ts)
+	}
 	err := tx.txn.Commit(context.Background())
 	if callback != nil {
 		callback(err)
@@ -419,16 +477,24 @@ func (tx *tikvTxn) CommitAt(commitTs uint64, callback func(error)) error {
 }
 
 func (tx *tikvTxn) Discard() {
+	tx.Lock()
+	defer tx.Unlock()
+	if tx.isWrite && tx.ts > 0 {
+		activeTikvTxns.Delete(tx.ts)
+	}
 	tx.txn.Rollback()
 }
 
 func (tx *tikvTxn) NewIterator(opt KVIterOpts) KVIterator {
-	// TiKV Iter takes start and end keys.
+	tx.RLock()
+	defer tx.RUnlock()
+	return tx.newIteratorNoLock(opt)
+}
+
+func (tx *tikvTxn) newIteratorNoLock(opt KVIterOpts) KVIterator {
 	var iter interface{}
 	var err error
 	if opt.IsReverse {
-		// Handle reverse scan: TiKV's IterReverse(k) returns keys < k.
-		// To match Badger's Seek(k) returning <= k, we append a null byte to the prefix/key.
 		startKey := make([]byte, len(opt.Prefix), len(opt.Prefix)+1)
 		copy(startKey, opt.Prefix)
 		startKey = append(startKey, 0x00)
@@ -440,6 +506,7 @@ func (tx *tikvTxn) NewIterator(opt KVIterOpts) KVIterator {
 		return nil
 	}
 	return &tikvIterator{
+		mu:        &tx.RWMutex,
 		txn:       tx.txn,
 		iter:      iter.(tikvInternalIterator),
 		prefix:    opt.Prefix,
@@ -452,6 +519,60 @@ func (tx *tikvTxn) LockKeys(ctx context.Context, keys ...[]byte) error {
 		return nil
 	}
 	return tx.txn.LockKeys(ctx, &kv.LockCtx{}, keys...)
+}
+
+type tikvSharedReadTxn struct {
+	parent *tikvTxn
+}
+
+func (tx *tikvSharedReadTxn) Get(key []byte) (KVItem, error) {
+	tx.parent.RLock()
+	defer tx.parent.RUnlock()
+	return tx.parent.getNoLock(key)
+}
+
+func (tx *tikvSharedReadTxn) BatchGet(keys [][]byte) (map[string][]byte, error) {
+	tx.parent.RLock()
+	defer tx.parent.RUnlock()
+	return tx.parent.batchGetNoLock(keys)
+}
+
+func (tx *tikvSharedReadTxn) Set(key, val []byte) error {
+	return errors.New("cannot write on shared read transaction")
+}
+
+func (tx *tikvSharedReadTxn) SetWithMeta(key, val []byte, meta byte) error {
+	return errors.New("cannot write on shared read transaction")
+}
+
+func (tx *tikvSharedReadTxn) SetWithDiscard(key, val []byte, meta byte) error {
+	return errors.New("cannot write on shared read transaction")
+}
+
+func (tx *tikvSharedReadTxn) SetEntry(e *badger.Entry) error {
+	return errors.New("cannot write on shared read transaction")
+}
+
+func (tx *tikvSharedReadTxn) Delete(key []byte) error {
+	return errors.New("cannot delete on shared read transaction")
+}
+
+func (tx *tikvSharedReadTxn) CommitAt(commitTs uint64, callback func(error)) error {
+	return errors.New("cannot commit shared read transaction")
+}
+
+// Discard on shared read txn is a no-op so that it does not rollback the write transaction.
+func (tx *tikvSharedReadTxn) Discard() {
+}
+
+func (tx *tikvSharedReadTxn) NewIterator(opt KVIterOpts) KVIterator {
+	tx.parent.RLock()
+	defer tx.parent.RUnlock()
+	return tx.parent.newIteratorNoLock(opt)
+}
+
+func (tx *tikvSharedReadTxn) LockKeys(ctx context.Context, keys ...[]byte) error {
+	return nil
 }
 
 type tikvItem struct {
@@ -491,6 +612,7 @@ func (i *tikvItem) IsDeletedOrExpired() bool { return false }
 func (i *tikvItem) ExpiresAt() uint64        { return 0 }
 
 type tikvIterator struct {
+	mu        *sync.RWMutex
 	txn       *transaction.KVTxn
 	iter      tikvInternalIterator
 	prefix    []byte
@@ -498,6 +620,10 @@ type tikvIterator struct {
 }
 
 func (it *tikvIterator) Rewind() {
+	if it.mu != nil {
+		it.mu.RLock()
+		defer it.mu.RUnlock()
+	}
 	if it.iter != nil {
 		it.iter.Close()
 	}
@@ -516,6 +642,10 @@ func (it *tikvIterator) Rewind() {
 }
 
 func (it *tikvIterator) Seek(key []byte) {
+	if it.mu != nil {
+		it.mu.RLock()
+		defer it.mu.RUnlock()
+	}
 	if it.iter != nil {
 		it.iter.Close()
 	}
