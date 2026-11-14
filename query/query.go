@@ -1055,6 +1055,7 @@ func evalLevelAgg(
 			ns, rawAttr := x.ParseNamespaceSafe(sg.Attr)
 			nsAttr := x.NamespaceAttr(uint64(ns), rawAttr)
 			attrID := flat.PredicateToAttrID(rawAttr)
+
 			readTxn := worker.GetPstore().NewTransactionAt(sg.ReadTs, false)
 			defer readTxn.Discard()
 

@@ -507,6 +507,13 @@ func (tx *tikvTxn) newIteratorNoLock(opt KVIterOpts) KVIterator {
 	var iter interface{}
 	var err error
 	var initialKey []byte
+
+	if opt.PrefetchSize > 1 {
+		tx.txn.GetSnapshot().SetScanBatchSize(opt.PrefetchSize)
+	} else if opt.PrefetchSize == 1 {
+		tx.txn.GetSnapshot().SetScanBatchSize(2)
+	}
+
 	if opt.IsReverse {
 		if len(opt.Prefix) > 0 {
 			initialKey = PrefixNext(opt.Prefix)
@@ -514,7 +521,11 @@ func (tx *tikvTxn) newIteratorNoLock(opt KVIterOpts) KVIterator {
 		iter, err = tx.txn.IterReverse(initialKey)
 	} else {
 		initialKey = opt.Prefix
-		iter, err = tx.txn.Iter(initialKey, nil)
+		var upperBound []byte
+		if len(opt.Prefix) > 0 {
+			upperBound = PrefixNext(opt.Prefix)
+		}
+		iter, err = tx.txn.Iter(initialKey, upperBound)
 	}
 	if err != nil {
 		return nil
@@ -660,7 +671,11 @@ func (it *tikvIterator) Rewind() {
 	if it.isReverse {
 		it.iter, err = it.txn.IterReverse(startKey)
 	} else {
-		it.iter, err = it.txn.Iter(startKey, nil)
+		var upperBound []byte
+		if len(it.prefix) > 0 {
+			upperBound = PrefixNext(it.prefix)
+		}
+		it.iter, err = it.txn.Iter(startKey, upperBound)
 	}
 	if err != nil {
 		it.iter = nil
@@ -699,7 +714,11 @@ func (it *tikvIterator) Seek(key []byte) {
 	if it.isReverse {
 		it.iter, err = it.txn.IterReverse(startKey)
 	} else {
-		it.iter, err = it.txn.Iter(startKey, nil)
+		var upperBound []byte
+		if len(it.prefix) > 0 {
+			upperBound = PrefixNext(it.prefix)
+		}
+		it.iter, err = it.txn.Iter(startKey, upperBound)
 	}
 	if err != nil {
 		it.iter = nil
