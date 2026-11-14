@@ -53,21 +53,7 @@ func ProcessDeleteNsRequest(ctx context.Context, ns uint64) error {
 		return errors.Wrap(err, "Failed to process delete request")
 	}
 
-	// Now propose the change to zero.
-	return x.RetryUntilSuccess(10, 100*time.Millisecond, func() error {
-		return sendDeleteToZero(ctx, ns)
-	})
-}
-
-func sendDeleteToZero(ctx context.Context, ns uint64) error {
-	gr := groups()
-	pl := gr.connToZeroLeader()
-	if pl == nil {
-		return conn.ErrNoConnection
-	}
-	zc := pb.NewZeroClient(pl.Get())
-	_, err := zc.DeleteNamespace(gr.Ctx(), &pb.DeleteNsRequest{Namespace: ns})
-	return err
+	return nil
 }
 
 func proposeDeleteOrSend(ctx context.Context, req *pb.DeleteNsRequest) error {

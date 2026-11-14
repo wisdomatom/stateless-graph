@@ -420,7 +420,6 @@ func postStreamProcessing(ctx context.Context) error {
 		return errors.Wrapf(err, "cannot update membership state after streaming data")
 	}
 
-	gr.informZeroAboutTablets()
 	ResetCache()
 	groups().applyInitialSchema()
 	groups().applyInitialTypes()

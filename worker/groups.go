@@ -77,7 +77,9 @@ func StartRaftNodes(bindall bool) {
 	g.Node = &node{
 		Node:   &conn.Node{Id: 1},
 		closer: z.NewCloser(1),
+		ops:    make(map[op]operation),
 	}
+	g.Node.Applied.Init(nil)
 	g.Unlock()
 
 	x.Checkf(schema.LoadFromDb(context.Background()), "Error while initializing schema")
@@ -98,8 +100,6 @@ func (g *groupi) Ctx() context.Context {
 func (g *groupi) IsClosed() bool {
 	return g.closer.Ctx().Err() != nil
 }
-
-func (g *groupi) informZeroAboutTablets() {}
 
 func (g *groupi) applyInitialTypes() {
 	initialTypes := schema.InitialTypes(x.RootNamespace)
@@ -192,20 +192,8 @@ func GetMembershipState() *pb.MembershipState {
 	return proto.Clone(g.state).(*pb.MembershipState)
 }
 
-// UpdateMembershipState contacts zero for an update on membership state.
+// UpdateMembershipState is a no-op in stateless mode.
 func UpdateMembershipState(ctx context.Context) error {
-	g := groups()
-	p := g.Leader(0)
-	if p == nil {
-		return nil
-	}
-
-	c := pb.NewZeroClient(p.Get())
-	state, err := c.Connect(ctx, &pb.Member{ClusterInfoOnly: true})
-	if err != nil {
-		return err
-	}
-	g.applyState(g.Node.Id, state.GetState())
 	return nil
 }
 
@@ -263,32 +251,6 @@ func (g *groupi) applyState(myId uint64, state *pb.MembershipState) {
 
 	// While restarting we fill Node information after retrieving initial state.
 	if g.Node != nil {
-		// Lets have this block before the one that adds the new members, else we may end up
-		// removing a freshly added node.
-
-		for _, member := range g.state.GetRemoved() {
-			// TODO: This leader check can be done once instead of repeatedly.
-			if member.GetGroupId() == g.Node.gid && g.Node.AmLeader() {
-				member := member // capture range variable
-				go func() {
-					// Don't try to remove a member if it's already marked as removed in
-					// the membership state and is not a current peer of the node.
-					_, isPeer := g.Node.Peer(member.GetId())
-					// isPeer should only be true if the removed node is not the same as this node.
-					isPeer = isPeer && member.GetId() != g.Node.RaftContext.Id
-
-					for _, oldMember := range oldState.GetRemoved() {
-						if oldMember.GetId() == member.GetId() && !isPeer {
-							return
-						}
-					}
-
-					if err := g.Node.ProposePeerRemoval(g.Ctx(), member.GetId()); err != nil {
-						glog.Errorf("Error while proposing node removal: %+v", err)
-					}
-				}()
-			}
-		}
 		conn.GetPools().RemoveInvalid(g.state)
 	}
 }
@@ -471,14 +433,6 @@ func (g *groupi) triggerMembershipSync() {
 	// It's ok to ignore it, since we would be sending update of a later state
 	default:
 	}
-}
-
-func (g *groupi) connToZeroLeader() *conn.Pool {
-	return nil
-}
-
-func (g *groupi) doSendMembership(tablets map[string]*pb.Tablet) error {
-	return nil
 }
 
 // GetFeaturesList returns a list of Dgraph features that are available.

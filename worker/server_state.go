@@ -37,7 +37,6 @@ const (
 	LimitDefaults = `mutations=allow; query-edge=1000000; normalize-node=10000; ` +
 		`mutations-nquad=1000000; disallow-drop=false; query-timeout=0ms; txn-abort-after=5m; ` +
 		`max-retries=10; max-pending-queries=10000; shared-instance=false; type-filter-uid-limit=10`
-	ZeroLimitsDefaults = `uid-lease=0; refill-interval=30s; disable-admin-http=false;`
 	GraphQLDefaults    = `introspection=true; debug=false; extensions=true; poll-interval=1s; ` +
 		`lambda-url=;`
 	CacheDefaults        = `size-mb=4096; percentage=40,40,20; remove-on-update=false`
@@ -50,8 +49,6 @@ type ServerState struct {
 
 	Pstore   x.KVDB
 	gcCloser *z.Closer // closer for valueLogGC
-
-	needTs chan tsReq
 }
 
 // State is the instance of ServerState used by the current server.
@@ -62,10 +59,8 @@ func InitServerState() {
 	Config.validate()
 
 	State.FinishCh = make(chan struct{})
-	State.needTs = make(chan tsReq, 100)
 
 	State.InitStorage()
-	go State.fillTimestampRequests()
 
 	if len(x.WorkerConfig.TiKVAddrs) == 0 && Config.PostingDir != "" {
 		groupId, err := x.ReadGroupIdFile(Config.PostingDir)
@@ -262,14 +257,4 @@ func (s *ServerState) AllocateStartTs() uint64 {
 	ts := s.Pstore.AllocateStartTs()
 	Oracle().SetMaxAssigned(ts)
 	return ts
-}
-
-func (s *ServerState) fillTimestampRequests() {
-	// No-op for local mode
-}
-
-type tsReq struct {
-	readOnly bool
-	// A one-shot chan which we can send a txn timestamp upon.
-	ch chan uint64
 }
