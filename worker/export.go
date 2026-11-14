@@ -211,6 +211,10 @@ func (e *exporter) toJSON() (*bpb.KVList, error) {
 	return listWrap(kv), err
 }
 
+func listWrap(kv *bpb.KV) *bpb.KVList {
+	return &bpb.KVList{Kv: []*bpb.KV{kv}}
+}
+
 func (e *exporter) toRDF() (*bpb.KVList, error) {
 	bp := new(bytes.Buffer)
 

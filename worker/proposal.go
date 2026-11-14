@@ -136,7 +136,13 @@ func (n *node) proposeAndWait(ctx context.Context, proposal *pb.Proposal) (perr 
 	}()
 
 	if n.Raft() == nil {
-		return errors.Errorf("Raft isn't initialized yet")
+		if proposal.Mutations != nil {
+			return n.applyMutations(ctx, proposal)
+		}
+		if proposal.Delta != nil {
+			return n.commitOrAbort(1, proposal.Delta)
+		}
+		return nil
 	}
 	if ctx.Err() != nil {
 		return ctx.Err()

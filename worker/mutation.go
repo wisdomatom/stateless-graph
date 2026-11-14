@@ -568,17 +568,13 @@ func ValidateAndConvert(edge *pb.DirectedEdge, su *pb.SchemaUpdate) error {
 	return nil
 }
 
-// AssignNsIdsOverNetwork sends a request to assign Namespace IDs to the current zero leader.
+// AssignNsIdsOverNetwork assigns Namespace IDs using local/storage UID sequence.
 func AssignNsIdsOverNetwork(ctx context.Context, num *pb.Num) (*pb.AssignedIds, error) {
-	pl := groups().Leader(0)
-	if pl == nil {
-		return nil, conn.ErrNoConnection
-	}
-
-	con := pl.Get()
-	c := pb.NewZeroClient(con)
-	num.Type = pb.Num_NS_ID
-	return c.AssignIds(ctx, num)
+	start, end := x.GetNextUids(num.Val)
+	return &pb.AssignedIds{
+		StartId: start,
+		EndId:   end,
+	}, nil
 }
 
 // AssignUidsOverNetwork sends a request to assign UIDs from the current zero leader.
