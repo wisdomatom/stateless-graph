@@ -127,7 +127,7 @@ func EncodeReverseKey(shardID uint16, ns uint32, attrID uint32, toUID, fromUID u
 }
 
 // EncodeIndexKey 编码二级索引键
-// 格式: ShardID(2B) || Namespace(4B) || 0x04 || AttrID(4B) || TokenTerm(变长) || 0x00 || SubjectUID(8B)
+// 格式: ShardID(2B) || Namespace(4B) || 0x04 || AttrID(4B) || TokenTerm[TokenType(1B) + Payload(变长)] || 0x00 || SubjectUID(8B)
 func EncodeIndexKey(shardID uint16, ns uint32, attrID uint32, token []byte, uid uint64) []byte {
 	tokenLen := len(token)
 	buf := make([]byte, HeaderLen+4+tokenLen+1+8)
