@@ -43,6 +43,11 @@ func workerPort() int {
 	return x.Config.PortOffset + x.PortInternal
 }
 
+// GetPstore 返回当前底层全局存储实例
+func GetPstore() x.KVDB {
+	return pstore
+}
+
 // Init initializes this package.
 func Init(ps x.KVDB) {
 	pstore = ps

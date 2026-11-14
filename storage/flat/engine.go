@@ -106,7 +106,7 @@ type Engine interface {
 	AddIndex(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, token []byte, uid uint64) error
 	DeleteIndex(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, token []byte, uid uint64) error
 	ScanIndex(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, token []byte) ([]uint64, error)
-	ScanIndexExtremum(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, isMax bool) ([]byte, uint64, bool, error)
+	ScanIndexExtremum(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, tokID byte, isMax bool) ([]byte, uint64, bool, error)
 }
 
 // DefaultEngine 默认扁平引擎实现
@@ -310,9 +310,13 @@ func (e *DefaultEngine) ScanIndex(txn x.KVTxn, shardID uint16, ns uint32, attrID
 }
 
 // ScanIndexExtremum 快速获取属性索引的极值（最小值或最大值），耗时为 O(1) 的单次 Seek
+// tokID 为索引 tokenizer 的唯一标识字节（如 IdentExact、IdentInt 等）；若为 0 则使用裸属性前缀
 // isMax 为 false 时 Seek 索引最前端获取最小值，为 true 时反向 Seek 获取最大值
-func (e *DefaultEngine) ScanIndexExtremum(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, isMax bool) ([]byte, uint64, bool, error) {
+func (e *DefaultEngine) ScanIndexExtremum(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, tokID byte, isMax bool) ([]byte, uint64, bool, error) {
 	prefix := AttrIndexPrefix(shardID, ns, attrID)
+	if tokID != 0 {
+		prefix = append(prefix, tokID)
+	}
 	opt := x.KVIterOpts{
 		Prefix:         prefix,
 		PrefetchValues: false,

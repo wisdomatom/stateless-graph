@@ -3205,7 +3205,7 @@ func godeep(it *lex.ItemIterator, gq *GraphQuery) error {
 					goto Fall
 				}
 				it.Next()
-				if gq.IsGroupby {
+				if gq.IsGroupby || it.Item().Val != valueFunc {
 					item = it.Item()
 					attr := collectName(it, item.Val)
 					// Get language list, if present
@@ -3218,12 +3218,8 @@ func godeep(it *lex.ItemIterator, gq *GraphQuery) error {
 						}
 					}
 					child.Attr = attr
-					child.IsInternal = false
+					child.IsInternal = true
 				} else {
-					if it.Item().Val != valueFunc {
-						return it.Errorf("Only variables allowed in aggregate functions. Got: %v",
-							it.Item().Val)
-					}
 					count, err := parseVarList(it, child)
 					if err != nil {
 						return err
@@ -3235,6 +3231,7 @@ func godeep(it *lex.ItemIterator, gq *GraphQuery) error {
 					child.NeedsVar[len(child.NeedsVar)-1].Typ = ValueVar
 				}
 				child.Func = &Function{
+					Attr:     child.Attr,
 					Name:     valLower,
 					NeedsVar: child.NeedsVar,
 				}

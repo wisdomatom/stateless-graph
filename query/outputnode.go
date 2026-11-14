@@ -1035,12 +1035,13 @@ func (sg *SubGraph) addAggregations(enc *encoder, fj fastJsonNode) error {
 	for _, child := range sg.Children {
 		aggVal, ok := child.Params.UidToVal.Get(0)
 		if !ok {
-			if len(child.Params.NeedsVar) == 0 {
+			if len(child.Params.NeedsVar) == 0 && child.SrcFunc == nil {
 				return errors.Errorf("Only aggregated variables allowed within empty block.")
 			}
-			// the aggregation didn't happen, most likely was called with unset vars.
+			// the aggregation didn't happen, most likely was called with unset vars or empty index.
 			// See: query.go:fillVars
 			// In this case we do nothing. The aggregate value in response will be returned as NULL.
+			continue
 		}
 		if child.Params.Normalize && child.Params.Alias == "" {
 			continue

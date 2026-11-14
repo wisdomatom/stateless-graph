@@ -491,16 +491,30 @@ func (tx *tikvTxn) NewIterator(opt KVIterOpts) KVIterator {
 	return tx.newIteratorNoLock(opt)
 }
 
+func PrefixNext(b []byte) []byte {
+	res := make([]byte, len(b))
+	copy(res, b)
+	for i := len(res) - 1; i >= 0; i-- {
+		res[i]++
+		if res[i] != 0 {
+			return res
+		}
+	}
+	return nil
+}
+
 func (tx *tikvTxn) newIteratorNoLock(opt KVIterOpts) KVIterator {
 	var iter interface{}
 	var err error
+	var initialKey []byte
 	if opt.IsReverse {
-		startKey := make([]byte, len(opt.Prefix), len(opt.Prefix)+1)
-		copy(startKey, opt.Prefix)
-		startKey = append(startKey, 0x00)
-		iter, err = tx.txn.IterReverse(startKey)
+		if len(opt.Prefix) > 0 {
+			initialKey = PrefixNext(opt.Prefix)
+		}
+		iter, err = tx.txn.IterReverse(initialKey)
 	} else {
-		iter, err = tx.txn.Iter(opt.Prefix, nil)
+		initialKey = opt.Prefix
+		iter, err = tx.txn.Iter(initialKey, nil)
 	}
 	if err != nil {
 		return nil
@@ -511,6 +525,8 @@ func (tx *tikvTxn) newIteratorNoLock(opt KVIterOpts) KVIterator {
 		iter:      iter.(tikvInternalIterator),
 		prefix:    opt.Prefix,
 		isReverse: opt.IsReverse,
+		currKey:   initialKey,
+		consumed:  false,
 	}
 }
 
@@ -617,6 +633,8 @@ type tikvIterator struct {
 	iter      tikvInternalIterator
 	prefix    []byte
 	isReverse bool
+	currKey   []byte
+	consumed  bool
 }
 
 func (it *tikvIterator) Rewind() {
@@ -624,21 +642,31 @@ func (it *tikvIterator) Rewind() {
 		it.mu.RLock()
 		defer it.mu.RUnlock()
 	}
+	var startKey []byte
+	if it.isReverse {
+		if len(it.prefix) > 0 {
+			startKey = PrefixNext(it.prefix)
+		}
+	} else {
+		startKey = it.prefix
+	}
+	if it.iter != nil && !it.consumed && bytes.Equal(it.currKey, startKey) {
+		return
+	}
 	if it.iter != nil {
 		it.iter.Close()
 	}
 	var err error
 	if it.isReverse {
-		startKey := make([]byte, len(it.prefix), len(it.prefix)+1)
-		copy(startKey, it.prefix)
-		startKey = append(startKey, 0x00)
 		it.iter, err = it.txn.IterReverse(startKey)
 	} else {
-		it.iter, err = it.txn.Iter(it.prefix, nil)
+		it.iter, err = it.txn.Iter(startKey, nil)
 	}
 	if err != nil {
 		it.iter = nil
 	}
+	it.currKey = startKey
+	it.consumed = false
 }
 
 func (it *tikvIterator) Seek(key []byte) {
@@ -646,24 +674,38 @@ func (it *tikvIterator) Seek(key []byte) {
 		it.mu.RLock()
 		defer it.mu.RUnlock()
 	}
-	if it.iter != nil {
-		it.iter.Close()
-	}
 	if len(key) == 0 {
 		key = it.prefix
 	}
+	var startKey []byte
+	if it.isReverse {
+		if len(key) > 0 {
+			startKey = key
+		} else if len(it.prefix) > 0 {
+			startKey = PrefixNext(it.prefix)
+		}
+	} else {
+		startKey = key
+	}
+
+	if it.iter != nil && !it.consumed && bytes.Equal(it.currKey, startKey) {
+		return
+	}
+
+	if it.iter != nil {
+		it.iter.Close()
+	}
 	var err error
 	if it.isReverse {
-		startKey := make([]byte, len(key), len(key)+1)
-		copy(startKey, key)
-		startKey = append(startKey, 0x00)
 		it.iter, err = it.txn.IterReverse(startKey)
 	} else {
-		it.iter, err = it.txn.Iter(key, nil)
+		it.iter, err = it.txn.Iter(startKey, nil)
 	}
 	if err != nil {
 		it.iter = nil
 	}
+	it.currKey = startKey
+	it.consumed = false
 }
 
 func (it *tikvIterator) Valid() bool {
@@ -677,6 +719,7 @@ func (it *tikvIterator) Valid() bool {
 }
 
 func (it *tikvIterator) Next() {
+	it.consumed = true
 	if err := it.iter.Next(); err != nil {
 		// Log error or handle it. KVIterator.Next() doesn't return error.
 	}

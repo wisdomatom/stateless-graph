@@ -345,7 +345,6 @@ func TestParseQueryAggChild(t *testing.T) {
 `
 	_, err := Parse(Request{Str: query})
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "Only variables allowed in aggregate functions")
 }
 
 func TestParseQueryWithXIDError(t *testing.T) {
@@ -5688,4 +5687,21 @@ func TestEmptyId(t *testing.T) {
 	}
 	_, err := Parse(r)
 	require.Error(t, err, "ID cannot be empty")
+}
+
+func TestParseDirectAttrAggregation(t *testing.T) {
+	query := `
+	{
+		aggregateMetaUsers_v2() {
+			name_min: min(MetaUser.name)
+			name_max: max(MetaUser.name)
+		}
+	}
+`
+	res, err := Parse(Request{Str: query})
+	require.NoError(t, err)
+	require.Equal(t, 2, len(res.Query[0].Children))
+	require.Equal(t, "min", res.Query[0].Children[0].Func.Name)
+	require.Equal(t, "MetaUser.name", res.Query[0].Children[0].Attr)
+	require.Equal(t, "name_min", res.Query[0].Children[0].Alias)
 }

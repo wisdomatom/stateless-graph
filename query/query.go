@@ -26,6 +26,7 @@ import (
 	"github.com/wisdomatom/stateless-graph/dql"
 	"github.com/wisdomatom/stateless-graph/protos/pb"
 	"github.com/wisdomatom/stateless-graph/schema"
+	"github.com/wisdomatom/stateless-graph/storage/flat"
 	"github.com/wisdomatom/stateless-graph/types"
 	"github.com/wisdomatom/stateless-graph/types/facets"
 	"github.com/wisdomatom/stateless-graph/worker"
@@ -1046,6 +1047,50 @@ func evalLevelAgg(
 
 	if parent == nil {
 		return nil, ErrWrongAgg
+	}
+
+	if len(sg.Params.NeedsVar) == 0 && sg.Attr != "" {
+		if sg.SrcFunc != nil && (sg.SrcFunc.Name == "min" || sg.SrcFunc.Name == "max") {
+			isMax := (sg.SrcFunc.Name == "max")
+			ns, rawAttr := x.ParseNamespaceSafe(sg.Attr)
+			nsAttr := x.NamespaceAttr(uint64(ns), rawAttr)
+			attrID := flat.PredicateToAttrID(rawAttr)
+			readTxn := worker.GetPstore().NewTransactionAt(sg.ReadTs, false)
+			defer readTxn.Discard()
+
+			var tokID byte
+			for _, t := range schema.State().Tokenizer(context.Background(), nsAttr) {
+				if t.IsSortable() {
+					tokID = t.Identifier()
+					break
+				}
+			}
+
+			if tokID != 0 {
+				_, uid, found, err := worker.GlobalFlatEngine.ScanIndexExtremum(readTxn, 0, ns, attrID, tokID, isMax)
+				if err != nil {
+					return nil, err
+				}
+				if found && uid > 0 {
+					sid := flat.CalculateShardID(uid, 0)
+					valType, valBytes, err := worker.GlobalFlatEngine.GetData(readTxn, sid, ns, attrID, uid)
+					if err == nil && len(valBytes) > 0 {
+						targetType := types.TypeID(valType)
+						if schemaType, err := schema.State().TypeOf(nsAttr); err == nil && schemaType.IsScalar() {
+							targetType = schemaType
+						}
+						sv, err := types.Convert(types.Val{Tid: types.BinaryID, Value: valBytes}, targetType)
+						if err != nil {
+							sv = types.Val{Tid: targetType, Value: string(valBytes)}
+						}
+						mp = types.NewShardedMap()
+						mp.Set(0, sv)
+						return mp, nil
+					}
+				}
+			}
+			return types.NewShardedMap(), nil
+		}
 	}
 
 	needsVar := sg.Params.NeedsVar[0].Name
@@ -2754,7 +2799,7 @@ func isValidFuncName(f string) bool {
 		"has", "uid", "uid_in", "anyof", "allof", "type", "match", "similar_to":
 		return true
 	}
-	return isInequalityFn(f) || types.IsGeoFunc(f)
+	return isInequalityFn(f) || types.IsGeoFunc(f) || isAggregatorFn(f)
 }
 
 func isInequalityFn(f string) bool {

@@ -175,21 +175,21 @@ func TestEngineScanIndexExtremum(t *testing.T) {
 	require.NoError(t, err)
 
 	// 1. 测试取最小值 Min (isMax = false)
-	minToken, minUID, foundMin, err := eng.ScanIndexExtremum(txn, shardID, ns, attrID, false)
+	minToken, minUID, foundMin, err := eng.ScanIndexExtremum(txn, shardID, ns, attrID, 0, false)
 	require.NoError(t, err)
 	require.True(t, foundMin)
 	require.Equal(t, []byte("018"), minToken)
 	require.Equal(t, uint64(101), minUID)
 
 	// 2. 测试取最大值 Max (isMax = true)
-	maxToken, maxUID, foundMax, err := eng.ScanIndexExtremum(txn, shardID, ns, attrID, true)
+	maxToken, maxUID, foundMax, err := eng.ScanIndexExtremum(txn, shardID, ns, attrID, 0, true)
 	require.NoError(t, err)
 	require.True(t, foundMax)
 	require.Equal(t, []byte("042"), maxToken)
 	require.Equal(t, uint64(103), maxUID)
 
 	// 3. 测试空属性的极值获取
-	_, _, foundEmpty, err := eng.ScanIndexExtremum(txn, shardID, ns, 99999, false)
+	_, _, foundEmpty, err := eng.ScanIndexExtremum(txn, shardID, ns, 99999, 0, false)
 	require.NoError(t, err)
 	require.False(t, foundEmpty)
 }
