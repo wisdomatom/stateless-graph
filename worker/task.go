@@ -441,6 +441,7 @@ func (qs *queryState) handleValuePostings(ctx context.Context, args funcArgs) er
 
 	outputs := make([]*pb.Result, numGo)
 
+	isScalarList := schema.State().IsList(q.Attr)
 	calculate := func(start, end int) error {
 		x.AssertTrue(start%width == 0)
 		out := &pb.Result{}
@@ -450,6 +451,16 @@ func (qs *queryState) handleValuePostings(ctx context.Context, args funcArgs) er
 		defer readTxn.Discard()
 		ns, rawAttr := parseNamespaceSafe(q.Attr)
 		attrID := flat.PredicateToAttrID(rawAttr)
+
+		var batchData map[string][]byte
+		if !isScalarList && end > start {
+			keys := make([][]byte, end-start)
+			for i := start; i < end; i++ {
+				sid := flat.CalculateShardID(q.UidList.Uids[i], 0)
+				keys[i-start] = flat.EncodeDataKey(sid, ns, attrID, q.UidList.Uids[i])
+			}
+			batchData, _ = readTxn.BatchGet(keys)
+		}
 
 		for i := start; i < end; i++ {
 			select {
@@ -461,8 +472,22 @@ func (qs *queryState) handleValuePostings(ctx context.Context, args funcArgs) er
 			var vals []types.Val
 			fcs := &pb.FacetsList{FacetsList: make([]*pb.Facets, 0)} // TODO Figure out how it is stored
 
-			shardID := flat.CalculateShardID(q.UidList.Uids[i], 0)
-			valTypes, valBytesList, err := GlobalFlatEngine.ScanData(readTxn, shardID, ns, attrID, q.UidList.Uids[i])
+			var valTypes []byte
+			var valBytesList [][]byte
+			var err error
+
+			if !isScalarList && batchData != nil {
+				sid := flat.CalculateShardID(q.UidList.Uids[i], 0)
+				k := flat.EncodeDataKey(sid, ns, attrID, q.UidList.Uids[i])
+				if raw, ok := batchData[string(k)]; ok && len(raw) > 0 {
+					valTypes = []byte{raw[0]}
+					valBytesList = [][]byte{raw[1:]}
+				}
+			} else {
+				shardID := flat.CalculateShardID(q.UidList.Uids[i], 0)
+				valTypes, valBytesList, err = GlobalFlatEngine.ScanData(readTxn, shardID, ns, attrID, q.UidList.Uids[i])
+			}
+
 			if q.DoCount {
 				cnt := uint32(0)
 				if err == nil {
