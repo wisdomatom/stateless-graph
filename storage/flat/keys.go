@@ -179,6 +179,28 @@ func IndexPrefix(shardID uint16, ns uint32, attrID uint32, token []byte) []byte 
 	return buf
 }
 
+// AttrIndexPrefix 构造指定 Predicate 二级索引的属性前缀 (11 字节)
+// 扫描该前缀可遍历当前属性的所有索引键（按 Token 字典序/数值序升序排列）
+func AttrIndexPrefix(shardID uint16, ns uint32, attrID uint32) []byte {
+	buf := make([]byte, HeaderLen+4)
+	writeHeader(buf, shardID, ns, KeyTypeIndex)
+	binary.BigEndian.PutUint32(buf[7:11], attrID)
+	return buf
+}
+
+// PrefixNext 返回大于当前前缀所有 key 的最小前缀（用于反向扫描的上界 Seek）
+func PrefixNext(b []byte) []byte {
+	res := make([]byte, len(b))
+	copy(res, b)
+	for i := len(res) - 1; i >= 0; i-- {
+		res[i]++
+		if res[i] != 0 {
+			return res
+		}
+	}
+	return nil
+}
+
 // DecodeKey 解析任意扁平 Key
 func DecodeKey(key []byte) (ParsedKey, error) {
 	if len(key) < HeaderLen+4 {

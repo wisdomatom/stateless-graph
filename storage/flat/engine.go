@@ -94,16 +94,19 @@ type Engine interface {
 	AddEdge(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, fromUID, toUID uint64, facets []byte) error
 	DeleteEdge(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, fromUID, toUID uint64) error
 	ScanOutEdges(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, fromUID uint64) (EdgeIterator, error)
+	ScanOutEdgesFrom(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, fromUID, afterUID uint64) (EdgeIterator, error)
 
 	// 反向入边操作
 	AddReverseEdge(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, toUID, fromUID uint64, facets []byte) error
 	DeleteReverseEdge(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, toUID, fromUID uint64) error
 	ScanInEdges(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, toUID uint64) (EdgeIterator, error)
+	ScanInEdgesFrom(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, toUID, afterUID uint64) (EdgeIterator, error)
 
 	// 二级索引操作
 	AddIndex(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, token []byte, uid uint64) error
 	DeleteIndex(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, token []byte, uid uint64) error
 	ScanIndex(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, token []byte) ([]uint64, error)
+	ScanIndexExtremum(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, isMax bool) ([]byte, uint64, bool, error)
 }
 
 // DefaultEngine 默认扁平引擎实现
@@ -208,6 +211,10 @@ func (e *DefaultEngine) DeleteEdge(txn x.KVTxn, shardID uint16, ns uint32, attrI
 }
 
 func (e *DefaultEngine) ScanOutEdges(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, fromUID uint64) (EdgeIterator, error) {
+	return e.ScanOutEdgesFrom(txn, shardID, ns, attrID, fromUID, 0)
+}
+
+func (e *DefaultEngine) ScanOutEdgesFrom(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, fromUID, afterUID uint64) (EdgeIterator, error) {
 	prefix := EdgePrefix(shardID, ns, attrID, fromUID)
 	opt := x.KVIterOpts{
 		Prefix:         prefix,
@@ -216,7 +223,12 @@ func (e *DefaultEngine) ScanOutEdges(txn x.KVTxn, shardID uint16, ns uint32, att
 	}
 
 	it := txn.NewIterator(opt)
-	it.Seek(prefix)
+	if afterUID > 0 {
+		seekKey := EncodeEdgeKey(shardID, ns, attrID, fromUID, afterUID+1)
+		it.Seek(seekKey)
+	} else {
+		it.Seek(prefix)
+	}
 
 	return &edgeIterator{
 		it:     it,
@@ -235,6 +247,10 @@ func (e *DefaultEngine) DeleteReverseEdge(txn x.KVTxn, shardID uint16, ns uint32
 }
 
 func (e *DefaultEngine) ScanInEdges(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, toUID uint64) (EdgeIterator, error) {
+	return e.ScanInEdgesFrom(txn, shardID, ns, attrID, toUID, 0)
+}
+
+func (e *DefaultEngine) ScanInEdgesFrom(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, toUID, afterUID uint64) (EdgeIterator, error) {
 	prefix := ReversePrefix(shardID, ns, attrID, toUID)
 	opt := x.KVIterOpts{
 		Prefix:         prefix,
@@ -243,7 +259,12 @@ func (e *DefaultEngine) ScanInEdges(txn x.KVTxn, shardID uint16, ns uint32, attr
 	}
 
 	it := txn.NewIterator(opt)
-	it.Seek(prefix)
+	if afterUID > 0 {
+		seekKey := EncodeReverseKey(shardID, ns, attrID, toUID, afterUID+1)
+		it.Seek(seekKey)
+	} else {
+		it.Seek(prefix)
+	}
 
 	return &edgeIterator{
 		it:     it,
@@ -286,4 +307,42 @@ func (e *DefaultEngine) ScanIndex(txn x.KVTxn, shardID uint16, ns uint32, attrID
 		uids = append(uids, pk.Uid1)
 	}
 	return uids, nil
+}
+
+// ScanIndexExtremum 快速获取属性索引的极值（最小值或最大值），耗时为 O(1) 的单次 Seek
+// isMax 为 false 时 Seek 索引最前端获取最小值，为 true 时反向 Seek 获取最大值
+func (e *DefaultEngine) ScanIndexExtremum(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, isMax bool) ([]byte, uint64, bool, error) {
+	prefix := AttrIndexPrefix(shardID, ns, attrID)
+	opt := x.KVIterOpts{
+		Prefix:         prefix,
+		PrefetchValues: false,
+		PrefetchSize:   1,
+		IsReverse:      isMax,
+	}
+
+	it := txn.NewIterator(opt)
+	defer it.Close()
+
+	if isMax {
+		seekKey := PrefixNext(prefix)
+		if seekKey != nil {
+			it.Seek(seekKey)
+		} else {
+			it.Seek(prefix)
+		}
+	} else {
+		it.Seek(prefix)
+	}
+
+	if it.Valid() {
+		k := it.Item().Key()
+		if bytes.HasPrefix(k, prefix) {
+			pk, err := DecodeKey(k)
+			if err != nil {
+				return nil, 0, false, err
+			}
+			return pk.Token, pk.Uid1, true, nil
+		}
+	}
+	return nil, 0, false, nil
 }

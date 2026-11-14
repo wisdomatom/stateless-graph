@@ -446,6 +446,11 @@ func (qs *queryState) handleValuePostings(ctx context.Context, args funcArgs) er
 		out := &pb.Result{}
 		outputs[start/width] = out
 
+		readTxn := pstore.NewTransactionAt(q.ReadTs, false)
+		defer readTxn.Discard()
+		ns, rawAttr := parseNamespaceSafe(q.Attr)
+		attrID := flat.PredicateToAttrID(rawAttr)
+
 		for i := start; i < end; i++ {
 			select {
 			case <-ctx.Done():
@@ -456,12 +461,8 @@ func (qs *queryState) handleValuePostings(ctx context.Context, args funcArgs) er
 			var vals []types.Val
 			fcs := &pb.FacetsList{FacetsList: make([]*pb.Facets, 0)} // TODO Figure out how it is stored
 
-			readTxn := pstore.NewTransactionAt(q.ReadTs, false)
-			ns, rawAttr := parseNamespaceSafe(q.Attr)
-			attrID := flat.PredicateToAttrID(rawAttr)
 			shardID := flat.CalculateShardID(q.UidList.Uids[i], 0)
 			valTypes, valBytesList, err := GlobalFlatEngine.ScanData(readTxn, shardID, ns, attrID, q.UidList.Uids[i])
-			readTxn.Discard()
 			if q.DoCount {
 				cnt := uint32(0)
 				if err == nil {
@@ -636,6 +637,11 @@ func (qs *queryState) handleUidPostings(
 		out := &pb.Result{}
 		outputs[start/width] = out
 
+		readTxn := pstore.NewTransactionAt(q.ReadTs, false)
+		defer readTxn.Discard()
+		ns, rawAttr := parseNamespaceSafe(q.Attr)
+		attrID := flat.PredicateToAttrID(rawAttr)
+
 		for i := start; i < end; i++ {
 			if i%100 == 0 {
 				select {
@@ -646,10 +652,8 @@ func (qs *queryState) handleUidPostings(
 			}
 
 			if srcFn.fnType == notAFunction {
-				readTxn := pstore.NewTransactionAt(q.ReadTs, false)
 				if q.Reverse {
 					uidList, err := FlatScanReverseEdges(ctx, readTxn, q.Attr, q.UidList.Uids[i], opts)
-					readTxn.Discard()
 					if err != nil {
 						return err
 					}
@@ -661,7 +665,6 @@ func (qs *queryState) handleUidPostings(
 					}
 				} else {
 					uidList, rawFacets, err := FlatScanEdges(ctx, readTxn, q.Attr, q.UidList.Uids[i], opts)
-					readTxn.Discard()
 					if err != nil {
 						return err
 					}
@@ -700,7 +703,6 @@ func (qs *queryState) handleUidPostings(
 				}
 				continue
 			} else if srcFn.fnType == uidInFn {
-				readTxn := pstore.NewTransactionAt(q.ReadTs, false)
 				topts := ListOptions{
 					ReadTs:    args.q.ReadTs,
 					AfterUid:  0,
@@ -714,7 +716,6 @@ func (qs *queryState) handleUidPostings(
 				} else {
 					uidList, _, err = FlatScanEdges(ctx, readTxn, q.Attr, q.UidList.Uids[i], topts)
 				}
-				readTxn.Discard()
 				if err != nil {
 					return err
 				}
@@ -723,11 +724,7 @@ func (qs *queryState) handleUidPostings(
 				}
 				continue
 			} else if len(srcFn.tokens) > i {
-				readTxn := pstore.NewTransactionAt(q.ReadTs, false)
-				ns, rawAttr := parseNamespaceSafe(q.Attr)
-				attrID := flat.PredicateToAttrID(rawAttr)
 				uids, err := GlobalFlatEngine.ScanIndex(readTxn, 0, ns, attrID, []byte(srcFn.tokens[i]))
-				readTxn.Discard()
 				if err != nil {
 					return err
 				}

@@ -269,7 +269,7 @@ func FlatScanEdges(ctx context.Context, txn x.KVTxn, attr string, fromUID uint64
 		return &pb.List{}, nil, nil
 	}
 
-	it, err := GlobalFlatEngine.ScanOutEdges(txn, shardID, ns, attrID, fromUID)
+	it, err := GlobalFlatEngine.ScanOutEdgesFrom(txn, shardID, ns, attrID, fromUID, opts.AfterUid)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -334,7 +334,7 @@ func FlatScanReverseEdges(ctx context.Context, txn x.KVTxn, attr string, toUID u
 		return &pb.List{}, nil
 	}
 
-	it, err := GlobalFlatEngine.ScanInEdges(txn, shardID, ns, attrID, toUID)
+	it, err := GlobalFlatEngine.ScanInEdgesFrom(txn, shardID, ns, attrID, toUID, opts.AfterUid)
 	if err != nil {
 		return nil, err
 	}

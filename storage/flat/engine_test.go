@@ -106,6 +106,17 @@ func TestEngineEdgeOperations(t *testing.T) {
 		remaining = append(remaining, it2.Entry().ToUID)
 	}
 	require.Equal(t, []uint64{2001, 2003}, remaining)
+
+	// 使用 ScanOutEdgesFrom 测试精准 Seek 分页 (afterUID = 2001，应只读出 2003)
+	itSeek, err := eng.ScanOutEdgesFrom(txn, shardID, ns, attrID, userA, 2001)
+	require.NoError(t, err)
+	defer itSeek.Close()
+
+	var seekResults []uint64
+	for itSeek.Next() {
+		seekResults = append(seekResults, itSeek.Entry().ToUID)
+	}
+	require.Equal(t, []uint64{2003}, seekResults)
 }
 
 func TestEngineIndexOperations(t *testing.T) {
@@ -140,4 +151,45 @@ func TestEngineIndexOperations(t *testing.T) {
 	gotUIDs2, err := eng.ScanIndex(txn, shardID, ns, attrID, tokenActive)
 	require.NoError(t, err)
 	require.Equal(t, []uint64{101, 303}, gotUIDs2)
+}
+
+func TestEngineScanIndexExtremum(t *testing.T) {
+	kv, cleanup := newTestKV(t)
+	defer cleanup()
+
+	eng := NewEngine()
+	txn := kv.NewTransactionAt(1, true)
+	defer txn.Discard()
+
+	shardID := uint16(0)
+	ns := uint32(0)
+	attrID := uint32(40)
+
+	// 模拟写入几个有序数值索引 (例如 age: 18 -> uid 1, 25 -> uid 2, 42 -> uid 3)
+	// 使用固定宽度字节或字典序字符模拟
+	err := eng.AddIndex(txn, shardID, ns, attrID, []byte("018"), 101)
+	require.NoError(t, err)
+	err = eng.AddIndex(txn, shardID, ns, attrID, []byte("025"), 102)
+	require.NoError(t, err)
+	err = eng.AddIndex(txn, shardID, ns, attrID, []byte("042"), 103)
+	require.NoError(t, err)
+
+	// 1. 测试取最小值 Min (isMax = false)
+	minToken, minUID, foundMin, err := eng.ScanIndexExtremum(txn, shardID, ns, attrID, false)
+	require.NoError(t, err)
+	require.True(t, foundMin)
+	require.Equal(t, []byte("018"), minToken)
+	require.Equal(t, uint64(101), minUID)
+
+	// 2. 测试取最大值 Max (isMax = true)
+	maxToken, maxUID, foundMax, err := eng.ScanIndexExtremum(txn, shardID, ns, attrID, true)
+	require.NoError(t, err)
+	require.True(t, foundMax)
+	require.Equal(t, []byte("042"), maxToken)
+	require.Equal(t, uint64(103), maxUID)
+
+	// 3. 测试空属性的极值获取
+	_, _, foundEmpty, err := eng.ScanIndexExtremum(txn, shardID, ns, 99999, false)
+	require.NoError(t, err)
+	require.False(t, foundEmpty)
 }
