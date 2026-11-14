@@ -64,29 +64,17 @@ type DgraphServer struct {
 }
 
 var (
-	raftTuning   = "learner=false; snapshot-after-entries=100000; snapshot-after-duration=60m; pending-proposals=4096; idx=; group=;"
 	badgerTuning = "compression=snappy; numgoroutines=32;"
 )
 
 func NewDgraphEmbed(conf DgraphServer) (*EmbedDgraph, error) {
-	err := os.MkdirAll(conf.EmbedDataDir, 0750)
-	if err != nil {
-		return nil, err
-	}
-	err = os.MkdirAll(path.Join(conf.EmbedDataDir, "zw"), 0750)
-	if err != nil {
-		return nil, err
-	}
-	f, err := os.OpenFile(path.Join(conf.EmbedDataDir, "zw", "wal.meta"), os.O_RDWR|os.O_CREATE, 0600)
-	if err != nil {
-		return nil, err
-	}
-	err = f.Close()
-	if err != nil {
-		return nil, err
+	// Only create local data directory if using embedded BadgerDB (no TiKV configured)
+	if len(conf.TiKVAddrs) == 0 && conf.EmbedDataDir != "" {
+		if err := os.MkdirAll(conf.EmbedDataDir, 0750); err != nil {
+			return nil, err
+		}
 	}
 
-	x.WorkerConfig.Raft = z.NewSuperFlag(raftTuning)
 	// For embedded server, disable hard sync to fully utilize NVMe speed for benchmarks.
 	x.WorkerConfig.HardSync = false
 	x.WorkerConfig.TiKVAddrs = conf.TiKVAddrs
@@ -174,11 +162,14 @@ func embedConnPool(addr string, listener *bufconn.Listener) (*conn.Pool, error) 
 
 func (r *EmbedDgraph) dAlpha(conf DgraphServer, lis *bufconn.Listener) {
 	// setup data directories
-	worker.Config.PostingDir = path.Join(conf.EmbedDataDir, "p")
-	worker.Config.WALDir = path.Join(conf.EmbedDataDir, "w")
+	if len(conf.TiKVAddrs) == 0 {
+		worker.Config.PostingDir = conf.EmbedDataDir
+	}
 	worker.Config.TypeFilterUidLimit = 100000
 
-	x.WorkerConfig.TmpDir = path.Join(conf.EmbedDataDir, "t")
+	if x.WorkerConfig.TmpDir == "" {
+		x.WorkerConfig.TmpDir = path.Join(os.TempDir(), "stateless-graph-tmp")
+	}
 	x.WorkerConfig.ZeroAddr = []string{embedBufNetZero}
 
 	// TODO: optimize these and more options

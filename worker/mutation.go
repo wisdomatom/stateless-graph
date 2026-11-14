@@ -28,7 +28,6 @@ import (
 	"github.com/wisdomatom/stateless-graph/conn"
 	"github.com/wisdomatom/stateless-graph/protos/pb"
 	"github.com/wisdomatom/stateless-graph/schema"
-	"github.com/wisdomatom/stateless-graph/storage/flat"
 	"github.com/wisdomatom/stateless-graph/tok/hnsw"
 	"github.com/wisdomatom/stateless-graph/types"
 	"github.com/wisdomatom/stateless-graph/x"
@@ -87,60 +86,10 @@ func runMutation(ctx context.Context, edge *pb.DirectedEdge, txn *Txn) error {
 		return err
 	}
 
-	if x.WorkerConfig.UseFlatStorage {
-		if txn.KVTxn == nil && pstore != nil {
-			txn.KVTxn = pstore.NewTransactionAt(txn.StartTs, true)
-		}
-		return ApplyFlatMutation(ctx, edge, txn.KVTxn)
+	if txn.KVTxn == nil && pstore != nil {
+		txn.KVTxn = pstore.NewTransactionAt(txn.StartTs, true)
 	}
-
-	isList := su.GetList()
-	if !isList {
-		if txn.KVTxn == nil && pstore != nil {
-			txn.KVTxn = pstore.NewTransactionAt(txn.StartTs, true)
-		}
-		if txn.KVTxn != nil {
-			ns, rawAttr := parseNamespaceSafe(edge.Attr)
-			attrID := flat.PredicateToAttrID(rawAttr)
-			shardID := flat.CalculateShardID(edge.Entity, 0)
-			lockKey := flat.EncodeDataKey(shardID, ns, attrID, edge.Entity)
-			if err := txn.KVTxn.Set(lockKey, []byte{1}); err != nil {
-				return err
-			}
-		}
-	}
-
-	key := x.DataKey(edge.Attr, edge.Entity)
-	var getFn func(key []byte) (*List, error)
-	switch {
-	case len(edge.Lang) == 0 && !isList:
-		// Scalar Predicates, without lang
-		getFn = txn.GetScalarList
-	case len(edge.Lang) > 0 || su.GetCount():
-		// Language or Count Index
-		getFn = txn.Get
-	case edge.Op == pb.DirectedEdge_DEL:
-		// Covers various delete cases to keep things simple.
-		getFn = txn.Get
-	default:
-		// Only count index needs to be read. For other indexes on list, we don't need to read any data.
-		// For indexes on scalar prediactes, only the last element needs to be left.
-		// Delete cases covered above.
-		getFn = txn.GetFromDelta
-	}
-
-	t := time.Now()
-	plist, err := getFn(key)
-	if dur := time.Since(t); dur > time.Millisecond {
-		span := trace.SpanFromContext(ctx)
-		span.AddEvent("Slow GetLru", trace.WithAttributes(
-			attribute.Bool("slow-get", true),
-			attribute.String("duration", dur.String())))
-	}
-	if err != nil {
-		return err
-	}
-	return plist.AddMutationWithIndex(ctx, edge, txn)
+	return ApplyFlatMutation(ctx, edge, txn.KVTxn)
 }
 
 func undoSchemaUpdate(predicate string) {
@@ -1024,21 +973,10 @@ func CommitOverNetwork(ctx context.Context, tc *api.TxnContext) (uint64, error) 
 	// Local commit logic: write deltas to disk and update cache
 	txn := Oracle().GetTxn(tc.StartTs)
 	if txn != nil {
-		if x.WorkerConfig.UseFlatStorage {
-			if txn.KVTxn != nil {
-				if err := txn.KVTxn.CommitAt(commitTs, nil); err != nil {
-					return 0, err
-				}
-			}
-		} else {
-			writer := NewTxnWriter(pstore)
-			if err := txn.CommitToDisk(writer, commitTs); err != nil {
+		if txn.KVTxn != nil {
+			if err := txn.KVTxn.CommitAt(commitTs, nil); err != nil {
 				return 0, err
 			}
-			if err := writer.Flush(); err != nil {
-				return 0, err
-			}
-			txn.UpdateCachedKeys(commitTs)
 		}
 	}
 

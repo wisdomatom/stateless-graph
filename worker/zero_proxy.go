@@ -11,7 +11,6 @@ import (
 	"github.com/pkg/errors"
 	"google.golang.org/grpc"
 
-	"github.com/wisdomatom/stateless-graph/conn"
 	"github.com/wisdomatom/stateless-graph/protos/pb"
 	"github.com/wisdomatom/stateless-graph/x"
 )
@@ -21,20 +20,11 @@ func forwardAssignUidsToZero(ctx context.Context, in *pb.Num) (*pb.AssignedIds, 
 		return &pb.AssignedIds{}, errors.Errorf("Cannot lease %s via zero proxy", in.Type.String())
 	}
 
-	if x.WorkerConfig.AclEnabled {
-		var err error
-		ctx, err = x.AttachJWTNamespaceOutgoing(ctx)
-		if err != nil {
-			return &pb.AssignedIds{}, err
-		}
-	}
-
-	pl := groups().Leader(0)
-	if pl == nil {
-		return nil, conn.ErrNoConnection
-	}
-	zc := pb.NewZeroClient(pl.Get())
-	return zc.AssignIds(ctx, in)
+	start, end := x.GetNextUids(in.Val)
+	return &pb.AssignedIds{
+		StartId: start,
+		EndId:   end,
+	}, nil
 }
 
 // RegisterZeroProxyServer forwards select GRPC calls over to Zero

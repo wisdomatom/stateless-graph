@@ -87,27 +87,31 @@ func SetConfiguration(newConfig *Options) {
 var AvailableMemory int64
 
 func (opt *Options) validate() {
+	if len(x.WorkerConfig.TiKVAddrs) > 0 {
+		return
+	}
+	if opt.PostingDir == "" {
+		return
+	}
 	pd, err := filepath.Abs(opt.PostingDir)
 	x.Check(err)
-	wd, err := filepath.Abs(opt.WALDir)
-	x.Check(err)
-	td, err := filepath.Abs(x.WorkerConfig.TmpDir)
-	x.Check(err)
-	x.AssertTruef(pd != wd,
-		"Posting and WAL directory cannot be the same ('%s').", opt.PostingDir)
-	x.AssertTruef(pd != td,
-		"Posting and Tmp directory cannot be the same ('%s').", opt.PostingDir)
-	x.AssertTruef(wd != td,
-		"WAL and Tmp directory cannot be the same ('%s').", opt.WALDir)
+	if opt.WALDir != "" {
+		wd, err := filepath.Abs(opt.WALDir)
+		x.Check(err)
+		x.AssertTruef(pd != wd,
+			"Posting and WAL directory cannot be the same ('%s').", opt.PostingDir)
+	}
+	if x.WorkerConfig.TmpDir != "" {
+		td, err := filepath.Abs(x.WorkerConfig.TmpDir)
+		x.Check(err)
+		x.AssertTruef(pd != td,
+			"Posting and Tmp directory cannot be the same ('%s').", opt.PostingDir)
+	}
 	if opt.Audit != nil {
 		ad, err := filepath.Abs(opt.Audit.Output)
 		x.Check(err)
 		x.AssertTruef(ad != pd,
 			"Posting directory and Audit Output cannot be the same ('%s').", opt.Audit.Output)
-		x.AssertTruef(ad != wd,
-			"WAL directory and Audit Output cannot be the same ('%s').", opt.Audit.Output)
-		x.AssertTruef(ad != td,
-			"Tmp directory and Audit Output cannot be the same ('%s').", opt.Audit.Output)
 	}
 }
 

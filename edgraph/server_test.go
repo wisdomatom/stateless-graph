@@ -131,7 +131,7 @@ func TestParseSchemaFromAlterOperation(t *testing.T) {
 	ps, err := badger.OpenManaged(badger.DefaultOptions(dir))
 	x.Check(err)
 	defer ps.Close()
-	schema.Init(ps)
+	schema.Init(x.NewBadgerKV(ps))
 
 	tests := []struct {
 		name    string

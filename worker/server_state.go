@@ -67,12 +67,16 @@ func InitServerState() {
 	State.InitStorage()
 	go State.fillTimestampRequests()
 
-	groupId, err := x.ReadGroupIdFile(Config.PostingDir)
-	if err != nil {
-		glog.Warningf("Could not read %s file inside posting directory %s.", x.GroupIdFileName,
-			Config.PostingDir)
+	if len(x.WorkerConfig.TiKVAddrs) == 0 && Config.PostingDir != "" {
+		groupId, err := x.ReadGroupIdFile(Config.PostingDir)
+		if err != nil {
+			glog.Warningf("Could not read %s file inside posting directory %s.", x.GroupIdFileName,
+				Config.PostingDir)
+		}
+		x.WorkerConfig.ProposedGroupId = groupId
+	} else {
+		x.WorkerConfig.ProposedGroupId = 1
 	}
-	x.WorkerConfig.ProposedGroupId = groupId
 }
 
 func setBadgerOptions(opt badger.Options) badger.Options {

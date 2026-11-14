@@ -199,31 +199,26 @@ func getInequalityTokens(ctx context.Context, readTs uint64, attr, f, lang strin
 	var seekKey []byte
 	var prefix []byte
 
-	if x.WorkerConfig.UseFlatStorage {
-		ns, rawAttr := x.ParseNamespaceSafe(attr)
-		attrID := flat.PredicateToAttrID(rawAttr)
+	ns, rawAttr := x.ParseNamespaceSafe(attr)
+	attrID := flat.PredicateToAttrID(rawAttr)
 
-		// Prefix: 7B header + 4B attrID + 1B tokenizer.Identifier() = 12B
-		prefix = make([]byte, 12)
-		binary.BigEndian.PutUint16(prefix[0:2], 0) // ShardID = 0
-		binary.BigEndian.PutUint32(prefix[2:6], ns)
-		prefix[6] = flat.KeyTypeIndex
-		binary.BigEndian.PutUint32(prefix[7:11], attrID)
-		prefix[11] = tokenizer.Identifier()
+	// Prefix: 7B header + 4B attrID + 1B tokenizer.Identifier() = 12B
+	prefix = make([]byte, 12)
+	binary.BigEndian.PutUint16(prefix[0:2], 0) // ShardID = 0
+	binary.BigEndian.PutUint32(prefix[2:6], ns)
+	prefix[6] = flat.KeyTypeIndex
+	binary.BigEndian.PutUint32(prefix[7:11], attrID)
+	prefix[11] = tokenizer.Identifier()
 
-		seekKey = make([]byte, 11+len(ineqTokensFinal[0]))
-		binary.BigEndian.PutUint16(seekKey[0:2], 0)
-		binary.BigEndian.PutUint32(seekKey[2:6], ns)
-		seekKey[6] = flat.KeyTypeIndex
-		binary.BigEndian.PutUint32(seekKey[7:11], attrID)
-		copy(seekKey[11:], ineqTokensFinal[0])
+	seekKey = make([]byte, 11+len(ineqTokensFinal[0]))
+	binary.BigEndian.PutUint16(seekKey[0:2], 0)
+	binary.BigEndian.PutUint32(seekKey[2:6], ns)
+	seekKey[6] = flat.KeyTypeIndex
+	binary.BigEndian.PutUint32(seekKey[7:11], attrID)
+	copy(seekKey[11:], ineqTokensFinal[0])
 
-		if !isgeOrGt {
-			seekKey = append(seekKey, 0xFF)
-		}
-	} else {
-		prefix = x.IndexKey(attr, string(tokenizer.Identifier()))
-		seekKey = x.IndexKey(attr, ineqTokensFinal[0])
+	if !isgeOrGt {
+		seekKey = append(seekKey, 0xFF)
 	}
 
 	itOpt := x.KVIterOpts{
@@ -255,19 +250,10 @@ LOOP:
 		item := itr.Item()
 		key := item.Key()
 
-		var term string
-		if x.WorkerConfig.UseFlatStorage {
-			if len(key) < 20 || key[len(key)-9] != 0x00 {
-				continue
-			}
-			term = string(key[11 : len(key)-9])
-		} else {
-			k, err := x.Parse(key)
-			if err != nil {
-				return nil, nil, err
-			}
-			term = k.Term
+		if len(key) < 20 || key[len(key)-9] != 0x00 {
+			continue
 		}
+		term := string(key[11 : len(key)-9])
 
 		switch {
 		// if its lossy then we handle inequality comparison later
