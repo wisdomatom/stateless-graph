@@ -30,10 +30,12 @@ import (
 	"github.com/dgraph-io/ristretto/v2/z"
 	"github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/health"
 	hapi "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/peer"
+	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 )
 
@@ -225,14 +227,73 @@ func (r *EmbedDgraph) GetClient() (*dgo.Dgraph, error) {
 	for _, cli := range r.client {
 		return cli, nil
 	}
-	cnn, err := embedGrpcConn(r.listenerAlpha, embedBufNetAlpha)
-	if err != nil {
-		return nil, err
-	}
-	dgraphClient := api.NewDgraphClient(cnn)
-	cli := dgo.NewDgraphClient(dgraphClient)
+	ipc := &inProcessClient{server: &edgraph.Server{}}
+	cli := dgo.NewDgraphClient(ipc)
 	r.client[uuid.NewString()] = cli
 	return cli, nil
+}
+
+type inProcessClient struct {
+	server *edgraph.Server
+}
+
+var _ api.DgraphClient = (*inProcessClient)(nil)
+
+func localContext(ctx context.Context) context.Context {
+	if _, ok := peer.FromContext(ctx); !ok {
+		return peer.NewContext(ctx, &peer.Peer{
+			Addr: &net.TCPAddr{IP: net.ParseIP("127.0.0.1")},
+		})
+	}
+	return ctx
+}
+
+func (c *inProcessClient) Login(ctx context.Context, in *api.LoginRequest, opts ...grpc.CallOption) (*api.Response, error) {
+	return c.server.Login(localContext(ctx), in)
+}
+
+func (c *inProcessClient) Query(ctx context.Context, in *api.Request, opts ...grpc.CallOption) (*api.Response, error) {
+	return c.server.QueryNoGrpc(localContext(ctx), in)
+}
+
+func (c *inProcessClient) Alter(ctx context.Context, in *api.Operation, opts ...grpc.CallOption) (*api.Payload, error) {
+	return c.server.Alter(localContext(ctx), in)
+}
+
+func (c *inProcessClient) CommitOrAbort(ctx context.Context, in *api.TxnContext, opts ...grpc.CallOption) (*api.TxnContext, error) {
+	return c.server.CommitOrAbort(localContext(ctx), in)
+}
+
+func (c *inProcessClient) CheckVersion(ctx context.Context, in *api.Check, opts ...grpc.CallOption) (*api.Version, error) {
+	return c.server.CheckVersion(localContext(ctx), in)
+}
+
+func (c *inProcessClient) RunDQL(ctx context.Context, in *api.RunDQLRequest, opts ...grpc.CallOption) (*api.Response, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RunDQL not implemented")
+}
+
+func (c *inProcessClient) AllocateIDs(ctx context.Context, in *api.AllocateIDsRequest, opts ...grpc.CallOption) (*api.AllocateIDsResponse, error) {
+	return c.server.AllocateIDs(localContext(ctx), in)
+}
+
+func (c *inProcessClient) UpdateExtSnapshotStreamingState(ctx context.Context, in *api.UpdateExtSnapshotStreamingStateRequest, opts ...grpc.CallOption) (*api.UpdateExtSnapshotStreamingStateResponse, error) {
+	return c.server.UpdateExtSnapshotStreamingState(localContext(ctx), in)
+}
+
+func (c *inProcessClient) StreamExtSnapshot(ctx context.Context, opts ...grpc.CallOption) (api.Dgraph_StreamExtSnapshotClient, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method StreamExtSnapshot not implemented")
+}
+
+func (c *inProcessClient) CreateNamespace(ctx context.Context, in *api.CreateNamespaceRequest, opts ...grpc.CallOption) (*api.CreateNamespaceResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method CreateNamespace not implemented")
+}
+
+func (c *inProcessClient) DropNamespace(ctx context.Context, in *api.DropNamespaceRequest, opts ...grpc.CallOption) (*api.DropNamespaceResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method DropNamespace not implemented")
+}
+
+func (c *inProcessClient) ListNamespaces(ctx context.Context, in *api.ListNamespacesRequest, opts ...grpc.CallOption) (*api.ListNamespacesResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListNamespaces not implemented")
 }
 
 func embedGrpcConn(listener *bufconn.Listener, addr string) (*grpc.ClientConn, error) {
