@@ -8,6 +8,7 @@ package worker
 import (
 	"github.com/wisdomatom/stateless-graph/algo"
 	"github.com/wisdomatom/stateless-graph/protos/pb"
+	"github.com/wisdomatom/stateless-graph/storage/flat"
 	"github.com/wisdomatom/stateless-graph/tok"
 	"github.com/wisdomatom/stateless-graph/x"
 )
@@ -69,19 +70,21 @@ func matchFuzzy(query, val string, max int) bool {
 // uidsForMatch collects a list of uids that "might" match a fuzzy term based on the ngram
 // index. matchFuzzy does the actual fuzzy match.
 // Returns the list of uids even if empty, or an error otherwise.
-func uidsForMatch(attr string, arg funcArgs) (*pb.List, error) {
+func uidsForMatch(readTxn x.KVTxn, attr string, arg funcArgs) (*pb.List, error) {
 	opts := ListOptions{
 		ReadTs:   arg.q.ReadTs,
 		First:    int(arg.q.First),
 		AfterUid: arg.q.AfterUid,
 	}
+	ns, rawAttr := parseNamespaceSafe(attr)
+	attrID := flat.PredicateToAttrID(rawAttr)
+
 	uidsForNgram := func(ngram string) (*pb.List, error) {
-		key := x.IndexKey(attr, ngram)
-		pl, err := GetNoStore(key, arg.q.ReadTs)
+		uids, err := GlobalFlatEngine.ScanIndexWithOptions(readTxn, 0, ns, attrID, []byte(ngram), opts.AfterUid, 0)
 		if err != nil {
 			return nil, err
 		}
-		return pl.Uids(opts)
+		return &pb.List{Uids: uids}, nil
 	}
 
 	tokens, err := tok.GetTokens(tok.IdentTrigram, arg.srcFn.tokens...)

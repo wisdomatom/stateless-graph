@@ -1094,7 +1094,9 @@ func (qs *queryState) handleRegexFunction(ctx context.Context, arg funcArgs) err
 
 	// Prefer to use an index (fast)
 	case useIndex:
-		uids, err = uidsForRegex(attr, arg, query, &empty)
+		readTxn := pstore.NewTransactionAt(arg.q.ReadTs, false)
+		defer readTxn.Discard()
+		uids, err = uidsForRegex(readTxn, attr, arg, query, &empty)
 		if err != nil {
 			return err
 		}
@@ -1274,8 +1276,10 @@ func (qs *queryState) handleMatchFunction(ctx context.Context, arg funcArgs) err
 		uids = arg.q.UidList
 
 	case schema.State().HasTokenizer(ctx, tok.IdentTrigram, attr):
+		readTxn := pstore.NewTransactionAt(arg.q.ReadTs, false)
+		defer readTxn.Discard()
 		var err error
-		uids, err = uidsForMatch(attr, arg)
+		uids, err = uidsForMatch(readTxn, attr, arg)
 		if err != nil {
 			return err
 		}

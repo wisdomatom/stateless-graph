@@ -13,6 +13,7 @@ import (
 
 	"github.com/wisdomatom/stateless-graph/algo"
 	"github.com/wisdomatom/stateless-graph/protos/pb"
+	"github.com/wisdomatom/stateless-graph/storage/flat"
 	"github.com/wisdomatom/stateless-graph/tok"
 	"github.com/wisdomatom/stateless-graph/x"
 )
@@ -20,7 +21,7 @@ import (
 var errRegexTooWide = errors.New(
 	"regular expression is too wide-ranging and can't be executed efficiently")
 
-func uidsForRegex(attr string, arg funcArgs,
+func uidsForRegex(readTxn x.KVTxn, attr string, arg funcArgs,
 	query *cindex.Query, intersect *pb.List) (*pb.List, error) {
 	var results *pb.List
 	opts := ListOptions{
@@ -32,13 +33,15 @@ func uidsForRegex(attr string, arg funcArgs,
 		opts.Intersect = intersect
 	}
 
+	ns, rawAttr := parseNamespaceSafe(attr)
+	attrID := flat.PredicateToAttrID(rawAttr)
+
 	uidsForTrigram := func(trigram string) (*pb.List, error) {
-		key := x.IndexKey(attr, trigram)
-		pl, err := GetNoStore(key, arg.q.ReadTs)
+		uids, err := GlobalFlatEngine.ScanIndexWithOptions(readTxn, 0, ns, attrID, []byte(trigram), opts.AfterUid, 0)
 		if err != nil {
 			return nil, err
 		}
-		return pl.Uids(opts)
+		return &pb.List{Uids: uids}, nil
 	}
 
 	switch query.Op {
@@ -65,7 +68,7 @@ func uidsForRegex(attr string, arg funcArgs,
 			}
 			// current list of result is passed for intersection
 			var err error
-			results, err = uidsForRegex(attr, arg, sub, results)
+			results, err = uidsForRegex(readTxn, attr, arg, sub, results)
 			if err != nil {
 				return nil, err
 			}
@@ -88,7 +91,7 @@ func uidsForRegex(attr string, arg funcArgs,
 			if results == nil {
 				results = intersect
 			}
-			subUids, err := uidsForRegex(attr, arg, sub, intersect)
+			subUids, err := uidsForRegex(readTxn, attr, arg, sub, intersect)
 			if err != nil {
 				return nil, err
 			}
