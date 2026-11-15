@@ -2,6 +2,7 @@ package flat
 
 import (
 	"bytes"
+	"encoding/binary"
 
 	"github.com/wisdomatom/stateless-graph/x"
 )
@@ -106,6 +107,7 @@ type Engine interface {
 	AddIndex(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, token []byte, uid uint64) error
 	DeleteIndex(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, token []byte, uid uint64) error
 	ScanIndex(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, token []byte) ([]uint64, error)
+	ScanIndexWithOptions(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, token []byte, afterUID uint64, limit int) ([]uint64, error)
 	ScanIndexExtremum(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, tokID byte, isMax bool) ([]byte, uint64, bool, error)
 }
 
@@ -283,28 +285,51 @@ func (e *DefaultEngine) DeleteIndex(txn x.KVTxn, shardID uint16, ns uint32, attr
 }
 
 func (e *DefaultEngine) ScanIndex(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, token []byte) ([]uint64, error) {
+	return e.ScanIndexWithOptions(txn, shardID, ns, attrID, token, 0, 0)
+}
+
+func (e *DefaultEngine) ScanIndexWithOptions(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, token []byte, afterUID uint64, limit int) ([]uint64, error) {
 	prefix := IndexPrefix(shardID, ns, attrID, token)
+	prefetchSize := 5000
+	if limit > 0 && limit < prefetchSize {
+		prefetchSize = limit
+	}
 	opt := x.KVIterOpts{
 		Prefix:         prefix,
 		PrefetchValues: false, // 索引只需读 Key 中的末尾 8 字节 UID，无需拉取 Value
-		PrefetchSize:   100,
+		PrefetchSize:   prefetchSize,
 	}
 
 	it := txn.NewIterator(opt)
 	defer it.Close()
 
-	var uids []uint64
-	for it.Seek(prefix); it.Valid(); it.Next() {
-		item := it.Item()
-		key := item.Key()
+	seekKey := prefix
+	if afterUID > 0 {
+		seekKey = EncodeIndexKey(shardID, ns, attrID, token, afterUID+1)
+	}
+
+	capacity := limit
+	if capacity <= 0 || capacity > 1024 {
+		capacity = 1024
+	}
+	uids := make([]uint64, 0, capacity)
+
+	for it.Seek(seekKey); it.Valid(); it.Next() {
+		key := it.Item().Key()
 		if !bytes.HasPrefix(key, prefix) {
 			break
 		}
-		pk, err := DecodeKey(key)
-		if err != nil {
-			return nil, err
+		if len(key) < 8 {
+			continue
 		}
-		uids = append(uids, pk.Uid1)
+		uid := binary.BigEndian.Uint64(key[len(key)-8:])
+		if afterUID > 0 && uid <= afterUID {
+			continue
+		}
+		uids = append(uids, uid)
+		if limit > 0 && len(uids) >= limit {
+			break
+		}
 	}
 	return uids, nil
 }

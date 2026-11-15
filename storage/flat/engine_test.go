@@ -193,3 +193,44 @@ func TestEngineScanIndexExtremum(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, foundEmpty)
 }
+
+func TestEngineScanIndexWithOptions(t *testing.T) {
+	kv, cleanup := newTestKV(t)
+	defer cleanup()
+
+	eng := NewEngine()
+	txn := kv.NewTransactionAt(1, true)
+	defer txn.Discard()
+
+	shardID := uint16(0)
+	ns := uint32(0)
+	attrID := uint32(50)
+	token := []byte("active")
+
+	// 写入 10 个 UID
+	for uid := uint64(1); uid <= 10; uid++ {
+		err := eng.AddIndex(txn, shardID, ns, attrID, token, uid*10)
+		require.NoError(t, err)
+	}
+
+	// 1. limit = 3, afterUID = 0
+	uids, err := eng.ScanIndexWithOptions(txn, shardID, ns, attrID, token, 0, 3)
+	require.NoError(t, err)
+	require.Equal(t, []uint64{10, 20, 30}, uids)
+
+	// 2. afterUID = 30, limit = 4
+	uids, err = eng.ScanIndexWithOptions(txn, shardID, ns, attrID, token, 30, 4)
+	require.NoError(t, err)
+	require.Equal(t, []uint64{40, 50, 60, 70}, uids)
+
+	// 3. afterUID = 80, limit = 10 (只剩 90, 100)
+	uids, err = eng.ScanIndexWithOptions(txn, shardID, ns, attrID, token, 80, 10)
+	require.NoError(t, err)
+	require.Equal(t, []uint64{90, 100}, uids)
+
+	// 4. afterUID = 100 (超出范围)
+	uids, err = eng.ScanIndexWithOptions(txn, shardID, ns, attrID, token, 100, 10)
+	require.NoError(t, err)
+	require.Empty(t, uids)
+}
+

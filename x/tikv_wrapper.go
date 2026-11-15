@@ -16,6 +16,7 @@ import (
 	"github.com/dgraph-io/ristretto/v2/z"
 	"github.com/pingcap/log"
 	"github.com/pkg/errors"
+	"github.com/tikv/client-go/v2/config"
 	"github.com/tikv/client-go/v2/kv"
 	"github.com/tikv/client-go/v2/tikv"
 	"github.com/tikv/client-go/v2/txnkv"
@@ -36,6 +37,10 @@ func NewTiKVKV(pdAddrs []string) (KVDB, error) {
 	logOnce.Do(func() {
 		l, p, _ := log.InitLogger(&log.Config{Level: "warn"})
 		log.ReplaceGlobals(l, p)
+		config.UpdateGlobal(func(conf *config.Config) {
+			conf.TiKVClient.AsyncCommit.KeysLimit = 20000
+			conf.TiKVClient.AsyncCommit.TotalKeySizeLimit = 16 * 1024 * 1024
+		})
 	})
 	client, err := txnkv.NewClient(pdAddrs)
 	if err != nil {

@@ -749,7 +749,11 @@ func (qs *queryState) handleUidPostings(
 				}
 				continue
 			} else if len(srcFn.tokens) > i {
-				uids, err := GlobalFlatEngine.ScanIndex(readTxn, 0, ns, attrID, []byte(srcFn.tokens[i]))
+				limit := 0
+				if opts.Intersect == nil && opts.First > 0 {
+					limit = opts.First
+				}
+				uids, err := GlobalFlatEngine.ScanIndexWithOptions(readTxn, 0, ns, attrID, []byte(srcFn.tokens[i]), opts.AfterUid, limit)
 				if err != nil {
 					return err
 				}
@@ -760,15 +764,15 @@ func (qs *queryState) handleUidPostings(
 					} else {
 						filtered = algo.IntersectSorted([]*pb.List{{Uids: filtered}, opts.Intersect}).Uids
 					}
-				}
-				if opts.AfterUid > 0 && len(filtered) > 0 {
-					idx := sort.Search(len(filtered), func(k int) bool {
-						return filtered[k] > opts.AfterUid
-					})
-					filtered = filtered[idx:]
-				}
-				if opts.First > 0 && len(filtered) > opts.First {
-					filtered = filtered[:opts.First]
+					if opts.AfterUid > 0 && len(filtered) > 0 {
+						idx := sort.Search(len(filtered), func(k int) bool {
+							return filtered[k] > opts.AfterUid
+						})
+						filtered = filtered[idx:]
+					}
+					if opts.First > 0 && len(filtered) > opts.First {
+						filtered = filtered[:opts.First]
+					}
 				}
 				out.UidMatrix = append(out.UidMatrix, &pb.List{Uids: filtered})
 				continue
