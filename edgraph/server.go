@@ -536,6 +536,13 @@ func (s *Server) doMutate(ctx context.Context, qc *queryContext, resp *api.Respo
 	if err != nil {
 		return err
 	}
+	if len(newUids) > 0 {
+		newUidSet := make(map[uint64]struct{}, len(newUids))
+		for _, u := range newUids {
+			newUidSet[u] = struct{}{}
+		}
+		ctx = x.WithNewUids(ctx, newUidSet)
+	}
 
 	// resp.Uids contains a map of the node name to the uid.
 	// 1. For a blank node, like _:foo, the key would be foo.

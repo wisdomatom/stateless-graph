@@ -284,3 +284,29 @@ type KVIterOpts struct {
 	PrefetchValues bool
 	PrefetchSize   int
 }
+
+type newUidsKey struct{}
+
+func WithNewUids(ctx context.Context, uids map[uint64]struct{}) context.Context {
+	if len(uids) == 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, newUidsKey{}, uids)
+}
+
+func IsNewUid(ctx context.Context, uid uint64) bool {
+	if ctx == nil {
+		return false
+	}
+	v := ctx.Value(newUidsKey{})
+	if v == nil {
+		return false
+	}
+	set, ok := v.(map[uint64]struct{})
+	if !ok {
+		return false
+	}
+	_, exists := set[uid]
+	return exists
+}
+
