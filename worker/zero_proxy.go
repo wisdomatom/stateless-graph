@@ -20,7 +20,10 @@ func forwardAssignUidsToZero(ctx context.Context, in *pb.Num) (*pb.AssignedIds, 
 		return &pb.AssignedIds{}, errors.Errorf("Cannot lease %s via zero proxy", in.Type.String())
 	}
 
-	start, end := x.GetNextUids(in.Val)
+	start, end, err := x.GetNextUidsWithErr(in.Val)
+	if err != nil {
+		return nil, err
+	}
 	return &pb.AssignedIds{
 		StartId: start,
 		EndId:   end,

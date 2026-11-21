@@ -7,6 +7,8 @@ package x
 
 import (
 	"context"
+	"fmt"
+	"math"
 	"sync"
 	"sync/atomic"
 
@@ -16,21 +18,44 @@ import (
 	"github.com/golang/glog"
 )
 
+type uidRange struct {
+	start uint64
+	end   uint64
+}
+
 var (
-	tsCounter  uint64 = 100
-	tsMax      uint64 = 0
-	tsMu       sync.Mutex
-	tsLeaser   func() (uint64, uint64, error)
-	uidCounter uint64 = 100
-	uidMax     uint64 = 0
-	uidMu      sync.Mutex
-	uidLeaser  func() (uint64, uint64, error)
+	tsCounter       uint64 = 100
+	tsMax           uint64 = 0
+	tsMu            sync.Mutex
+	tsLeaser        func() (uint64, uint64, error)
+	uidCounter      uint64 = 100
+	uidMax          uint64 = 0
+	uidPrefetchAt   uint64 = math.MaxUint64
+	uidMu           sync.Mutex
+	uidLeaser       func() (uint64, uint64, error)
+	uidNext         *uidRange
+	uidPrefetching  uint32
+	uidPrefetchDone chan struct{}
 )
+
+func installUidRangeLocked(start, end uint64) {
+	// Briefly set uidMax to 0 so concurrent fast-path readers fall back to uidMu
+	// while counter and max are updated, avoiding cross-range allocation.
+	atomic.StoreUint64(&uidMax, 0)
+	atomic.StoreUint64(&uidCounter, start)
+	if end > start {
+		atomic.StoreUint64(&uidPrefetchAt, start+(end-start)/2)
+	} else {
+		atomic.StoreUint64(&uidPrefetchAt, math.MaxUint64)
+	}
+	atomic.StoreUint64(&uidMax, end)
+}
 
 func SetUidLeaser(f func() (uint64, uint64, error)) {
 	uidMu.Lock()
 	defer uidMu.Unlock()
 	uidLeaser = f
+	uidNext = nil
 }
 
 func SetTsLeaser(f func() (uint64, uint64, error)) {
@@ -81,42 +106,131 @@ func SetNextTsRange(start, end uint64) {
 	glog.Infof("TS range leased: [%d, %d]", start, end)
 }
 
-func GetNextUids(howMany uint64) (uint64, uint64) {
+func maybeStartUidPrefetch() {
+	uidMu.Lock()
+	if uidLeaser == nil || uidNext != nil || atomic.LoadUint32(&uidPrefetching) == 1 {
+		uidMu.Unlock()
+		return
+	}
+	leaser := uidLeaser
+	atomic.StoreUint32(&uidPrefetching, 1)
+	// Suppress repeated fast-path prefetch triggers while prefetch is running or buffered.
+	atomic.StoreUint64(&uidPrefetchAt, math.MaxUint64)
+	done := make(chan struct{})
+	uidPrefetchDone = done
+	uidMu.Unlock()
+
+	go func() {
+		start, end, err := leaser()
+		uidMu.Lock()
+		if err == nil && end > start {
+			uidNext = &uidRange{start: start, end: end}
+			glog.Infof("UID next range prefetched: [%d, %d]", start, end)
+		} else {
+			if err != nil {
+				glog.Errorf("Failed to async prefetch UID lease: %v", err)
+			}
+			// Re-arm prefetch trigger so a future allocation can retry.
+			cur := atomic.LoadUint64(&uidCounter)
+			max := atomic.LoadUint64(&uidMax)
+			if cur < max {
+				atomic.StoreUint64(&uidPrefetchAt, cur)
+			}
+		}
+		atomic.StoreUint32(&uidPrefetching, 0)
+		close(done)
+		uidMu.Unlock()
+	}()
+}
+
+// GetNextUidsWithErr allocates `howMany` monotonically increasing UIDs using a
+// double-buffered async prefetch lease mechanism.
+func GetNextUidsWithErr(howMany uint64) (uint64, uint64, error) {
 	if howMany == 0 {
-		return 0, 0
+		return 0, 0, nil
 	}
 	for {
 		cur := atomic.LoadUint64(&uidCounter)
 		max := atomic.LoadUint64(&uidMax)
 		if cur+howMany <= max {
 			if atomic.CompareAndSwapUint64(&uidCounter, cur, cur+howMany) {
-				return cur + 1, cur + howMany
+				newCur := cur + howMany
+				if newCur >= atomic.LoadUint64(&uidPrefetchAt) {
+					maybeStartUidPrefetch()
+				}
+				return cur + 1, newCur, nil
 			}
 			continue
 		}
 
+		uidMu.Lock()
 		if uidLeaser == nil {
+			uidMu.Unlock()
 			newVal := atomic.AddUint64(&uidCounter, howMany)
-			return newVal - howMany + 1, newVal
+			return newVal - howMany + 1, newVal, nil
 		}
 
-		uidMu.Lock()
 		cur = atomic.LoadUint64(&uidCounter)
 		max = atomic.LoadUint64(&uidMax)
-		if cur+howMany > max {
-			start, end, err := uidLeaser()
-			if err == nil {
-				atomic.StoreUint64(&uidCounter, start)
-				atomic.StoreUint64(&uidMax, end)
-			} else {
-				glog.Errorf("Failed to renew UID lease: %v", err)
-				newVal := atomic.AddUint64(&uidCounter, howMany)
-				uidMu.Unlock()
-				return newVal - howMany + 1, newVal
-			}
+		if cur+howMany <= max {
+			uidMu.Unlock()
+			continue
 		}
+
+		// Case 1: Double-buffer hit — swap in the prefetched range in nanoseconds.
+		if uidNext != nil {
+			next := uidNext
+			uidNext = nil
+			installUidRangeLocked(next.start, next.end)
+			uidMu.Unlock()
+			if next.end <= next.start || next.end-next.start < howMany {
+				return 0, 0, fmt.Errorf("prefetched UID range [%d, %d] is smaller than requested %d", next.start, next.end, howMany)
+			}
+			continue
+		}
+
+		// Case 2: Async prefetch is already in flight — wait without holding uidMu.
+		if atomic.LoadUint32(&uidPrefetching) == 1 && uidPrefetchDone != nil {
+			done := uidPrefetchDone
+			uidMu.Unlock()
+			<-done
+			continue
+		}
+
+		// Case 3: No buffered range and no in-flight prefetch — lease synchronously (singleflight).
+		leaser := uidLeaser
+		atomic.StoreUint32(&uidPrefetching, 1)
+		done := make(chan struct{})
+		uidPrefetchDone = done
 		uidMu.Unlock()
+
+		start, end, err := leaser()
+
+		uidMu.Lock()
+		if err == nil && end > start {
+			installUidRangeLocked(start, end)
+		}
+		atomic.StoreUint32(&uidPrefetching, 0)
+		close(done)
+		uidMu.Unlock()
+
+		if err != nil {
+			glog.Errorf("Failed to renew UID lease: %v", err)
+			return 0, 0, err
+		}
+		if end <= start || end-start < howMany {
+			return 0, 0, fmt.Errorf("leased UID range [%d, %d] is smaller than requested %d", start, end, howMany)
+		}
 	}
+}
+
+func GetNextUids(howMany uint64) (uint64, uint64) {
+	start, end, err := GetNextUidsWithErr(howMany)
+	if err != nil {
+		glog.Errorf("GetNextUids failed: %v", err)
+		return 0, 0
+	}
+	return start, end
 }
 
 func GetNextUid() uint64 {
@@ -127,15 +241,15 @@ func GetNextUid() uint64 {
 func SetNextUid(val uint64) {
 	uidMu.Lock()
 	defer uidMu.Unlock()
-	atomic.StoreUint64(&uidCounter, val)
-	atomic.StoreUint64(&uidMax, val) // Just a base
+	uidNext = nil
+	installUidRangeLocked(val, val)
 }
 
 func SetNextUidRange(start, end uint64) {
 	uidMu.Lock()
 	defer uidMu.Unlock()
-	atomic.StoreUint64(&uidCounter, start)
-	atomic.StoreUint64(&uidMax, end)
+	uidNext = nil
+	installUidRangeLocked(start, end)
 	glog.Infof("UID range leased: [%d, %d]", start, end)
 }
 
