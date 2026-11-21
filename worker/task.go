@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/golang/glog"
@@ -1124,27 +1125,131 @@ func (qs *queryState) handleRegexFunction(ctx context.Context, arg funcArgs) err
 		attribute.String("lang", lang)))
 
 	filtered := &pb.List{}
-	for _, uid := range uids.Uids {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-		vals, err := qs.getValsForUID(attr, lang, uid, arg.q.ReadTs)
-		if err != nil {
-			if err == ErrNoValue {
-				continue
+	if !isList && len(uids.Uids) > 1 {
+		// BatchGet optimization: avoid N+1 serial TiKV Get RPCs when verifying
+		// thousands of candidate UIDs against the exact regular expression.
+		ns, rawAttr := parseNamespaceSafe(attr)
+		attrID := flat.PredicateToAttrID(rawAttr)
+		const batchSize = 2000
+		numBatches := (len(uids.Uids) + batchSize - 1) / batchSize
+		batchResults := make([]map[string][]byte, numBatches)
+		batchKeys := make([][][]byte, numBatches)
+
+		for b := 0; b < numBatches; b++ {
+			start := b * batchSize
+			end := start + batchSize
+			if end > len(uids.Uids) {
+				end = len(uids.Uids)
 			}
-			return err
+			keys := make([][]byte, end-start)
+			for idx, uid := range uids.Uids[start:end] {
+				shardID := flat.CalculateShardID(uid, 0)
+				keys[idx] = flat.EncodeDataKey(shardID, ns, attrID, uid)
+			}
+			batchKeys[b] = keys
 		}
 
-		for _, val := range vals {
-			// convert data from binary to appropriate format
-			strVal, err := types.Convert(val, types.StringID)
-			if err == nil && matchRegex(strVal, arg.srcFn.regex) {
-				filtered.Uids = append(filtered.Uids, uid)
-				// NOTE: We only add the uid once.
-				break
+		canParallel := pstore != nil && !x.IsActiveWriteTs(arg.q.ReadTs) && numBatches > 1
+		if canParallel {
+			const maxWorkers = 4
+			sem := make(chan struct{}, maxWorkers)
+			var wg sync.WaitGroup
+			var errMu sync.Mutex
+			var firstErr error
+			for b := 0; b < numBatches; b++ {
+				wg.Add(1)
+				go func(bi int) {
+					defer wg.Done()
+					select {
+					case sem <- struct{}{}:
+						defer func() { <-sem }()
+					case <-ctx.Done():
+						errMu.Lock()
+						if firstErr == nil {
+							firstErr = ctx.Err()
+						}
+						errMu.Unlock()
+						return
+					}
+					txn := pstore.NewTransactionAt(arg.q.ReadTs, false)
+					defer txn.Discard()
+					res, berr := txn.BatchGet(batchKeys[bi])
+					if berr != nil {
+						errMu.Lock()
+						if firstErr == nil {
+							firstErr = berr
+						}
+						errMu.Unlock()
+						return
+					}
+					batchResults[bi] = res
+				}(b)
+			}
+			wg.Wait()
+			if firstErr != nil {
+				return firstErr
+			}
+		} else {
+			txn := pstore.NewTransactionAt(arg.q.ReadTs, false)
+			defer txn.Discard()
+			for b := 0; b < numBatches; b++ {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				res, berr := txn.BatchGet(batchKeys[b])
+				if berr != nil {
+					return berr
+				}
+				batchResults[b] = res
+			}
+		}
+
+		for b := 0; b < numBatches; b++ {
+			start := b * batchSize
+			end := start + batchSize
+			if end > len(uids.Uids) {
+				end = len(uids.Uids)
+			}
+			resMap := batchResults[b]
+			keys := batchKeys[b]
+			for idx, uid := range uids.Uids[start:end] {
+				rawVal, ok := resMap[string(keys[idx])]
+				if !ok || len(rawVal) <= 1 {
+					continue
+				}
+				val := types.Val{
+					Tid:   types.TypeID(rawVal[0]),
+					Value: rawVal[1:],
+				}
+				strVal, convErr := types.Convert(val, types.StringID)
+				if convErr == nil && matchRegex(strVal, arg.srcFn.regex) {
+					filtered.Uids = append(filtered.Uids, uid)
+				}
+			}
+		}
+	} else {
+		for _, uid := range uids.Uids {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
+			vals, err := qs.getValsForUID(attr, lang, uid, arg.q.ReadTs)
+			if err != nil {
+				if err == ErrNoValue {
+					continue
+				}
+				return err
+			}
+
+			for _, val := range vals {
+				// convert data from binary to appropriate format
+				strVal, err := types.Convert(val, types.StringID)
+				if err == nil && matchRegex(strVal, arg.srcFn.regex) {
+					filtered.Uids = append(filtered.Uids, uid)
+					// NOTE: We only add the uid once.
+					break
+				}
 			}
 		}
 	}
