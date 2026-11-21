@@ -77,8 +77,8 @@ func ApplyFlatMutation(ctx context.Context, edge *pb.DirectedEdge, txn x.KVTxn) 
 			}
 		} else {
 			if !isList && !isNewEntity {
-				// 单值关系写入：清理同一 Entity 下可能存在的旧正向出边
-				if it, err := GlobalFlatEngine.ScanOutEdges(txn, shardID, ns, attrID, edge.Entity); err == nil {
+				// 单值关系写入：清理同一 Entity 下可能存在的旧正向出边（只需 toUID，走 KeyOnly 模式）
+				if it, err := GlobalFlatEngine.ScanOutEdgesKeyOnly(txn, shardID, ns, attrID, edge.Entity, 0); err == nil {
 					for it.Next() {
 						oldToUID := it.Entry().ToUID
 						if oldToUID != edge.ValueId {
@@ -266,7 +266,13 @@ func FlatScanEdges(ctx context.Context, txn x.KVTxn, attr string, fromUID uint64
 		return &pb.List{}, nil, nil
 	}
 
-	it, err := GlobalFlatEngine.ScanOutEdgesFrom(txn, shardID, ns, attrID, fromUID, opts.AfterUid)
+	var it flat.EdgeIterator
+	var err error
+	if opts.KeyOnly {
+		it, err = GlobalFlatEngine.ScanOutEdgesKeyOnly(txn, shardID, ns, attrID, fromUID, opts.AfterUid)
+	} else {
+		it, err = GlobalFlatEngine.ScanOutEdgesFrom(txn, shardID, ns, attrID, fromUID, opts.AfterUid)
+	}
 	if err != nil {
 		return nil, nil, err
 	}
@@ -292,20 +298,22 @@ func FlatScanEdges(ctx context.Context, txn x.KVTxn, attr string, fromUID uint64
 			}
 		}
 
-		// 3. 收集 Facets (如果有)
-		var edgeFacets *pb.Facets
-		if len(entry.Facets) > 0 {
-			var f pb.Facets
-			if err := proto.Unmarshal(entry.Facets, &f); err == nil {
-				edgeFacets = &f
-			}
-		}
-		if edgeFacets == nil {
-			edgeFacets = &pb.Facets{}
-		}
-
 		uids = append(uids, toUID)
-		fcsList = append(fcsList, edgeFacets)
+
+		// 3. 收集 Facets (仅在非 KeyOnly 模式下读取)
+		if !opts.KeyOnly {
+			var edgeFacets *pb.Facets
+			if len(entry.Facets) > 0 {
+				var f pb.Facets
+				if err := proto.Unmarshal(entry.Facets, &f); err == nil {
+					edgeFacets = &f
+				}
+			}
+			if edgeFacets == nil {
+				edgeFacets = &pb.Facets{}
+			}
+			fcsList = append(fcsList, edgeFacets)
+		}
 
 		// 4. Limit/First 截断 (如果有)
 		if opts.First > 0 && len(uids) >= opts.First {
@@ -331,7 +339,7 @@ func FlatScanReverseEdges(ctx context.Context, txn x.KVTxn, attr string, toUID u
 		return &pb.List{}, nil
 	}
 
-	it, err := GlobalFlatEngine.ScanInEdgesFrom(txn, shardID, ns, attrID, toUID, opts.AfterUid)
+	it, err := GlobalFlatEngine.ScanInEdgesKeyOnly(txn, shardID, ns, attrID, toUID, opts.AfterUid)
 	if err != nil {
 		return nil, err
 	}

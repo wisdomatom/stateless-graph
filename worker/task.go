@@ -689,7 +689,11 @@ func (qs *queryState) handleUidPostings(
 						out.UidMatrix = append(out.UidMatrix, uidList)
 					}
 				} else {
-					uidList, rawFacets, err := FlatScanEdges(ctx, readTxn, q.Attr, q.UidList.Uids[i], opts)
+					edgeOpts := opts
+					if facetsTree == nil && q.FacetParam == nil {
+						edgeOpts.KeyOnly = true
+					}
+					uidList, rawFacets, err := FlatScanEdges(ctx, readTxn, q.Attr, q.UidList.Uids[i], edgeOpts)
 					if err != nil {
 						return err
 					}
@@ -733,6 +737,7 @@ func (qs *queryState) handleUidPostings(
 					AfterUid:  0,
 					Intersect: &pb.List{Uids: srcFn.uidsPresent},
 					First:     1, // 只要找到 1 个交集就够了
+					KeyOnly:   true,
 				}
 				var uidList *pb.List
 				var err error

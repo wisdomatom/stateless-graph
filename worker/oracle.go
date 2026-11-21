@@ -37,6 +37,7 @@ type ListOptions struct {
 	AfterUid  uint64
 	Intersect *pb.List
 	First     int
+	KeyOnly   bool
 }
 
 // Txn represents an in-flight transaction wrapper.

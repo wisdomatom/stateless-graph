@@ -24,11 +24,12 @@ type EdgeIterator interface {
 }
 
 type edgeIterator struct {
-	it     x.KVIterator
-	prefix []byte
-	cur    EdgeEntry
-	err    error
-	valid  bool
+	it      x.KVIterator
+	prefix  []byte
+	keyOnly bool
+	cur     EdgeEntry
+	err     error
+	valid   bool
 }
 
 func (ei *edgeIterator) Next() bool {
@@ -51,11 +52,14 @@ func (ei *edgeIterator) Next() bool {
 		return false
 	}
 
-	val, err := item.ValueCopy(nil)
-	if err != nil {
-		ei.err = err
-		ei.valid = false
-		return false
+	var val []byte
+	if !ei.keyOnly {
+		val, err = item.ValueCopy(nil)
+		if err != nil {
+			ei.err = err
+			ei.valid = false
+			return false
+		}
 	}
 
 	ei.cur = EdgeEntry{
@@ -97,12 +101,14 @@ type Engine interface {
 	DeleteEdge(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, fromUID, toUID uint64) error
 	ScanOutEdges(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, fromUID uint64) (EdgeIterator, error)
 	ScanOutEdgesFrom(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, fromUID, afterUID uint64) (EdgeIterator, error)
+	ScanOutEdgesKeyOnly(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, fromUID, afterUID uint64) (EdgeIterator, error)
 
 	// 反向入边操作
 	AddReverseEdge(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, toUID, fromUID uint64, facets []byte) error
 	DeleteReverseEdge(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, toUID, fromUID uint64) error
 	ScanInEdges(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, toUID uint64) (EdgeIterator, error)
 	ScanInEdgesFrom(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, toUID, afterUID uint64) (EdgeIterator, error)
+	ScanInEdgesKeyOnly(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, toUID, afterUID uint64) (EdgeIterator, error)
 
 	// 二级索引操作
 	AddIndex(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, token []byte, uid uint64) error
@@ -164,7 +170,7 @@ func (e *DefaultEngine) DeleteListData(txn x.KVTxn, shardID uint16, ns uint32, a
 
 func (e *DefaultEngine) DeleteAllData(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, uid uint64) error {
 	prefix := EncodeDataKey(shardID, ns, attrID, uid)
-	it := txn.NewIterator(x.KVIterOpts{Prefix: prefix})
+	it := txn.NewIterator(x.KVIterOpts{Prefix: prefix, KeyOnly: true})
 	defer it.Close()
 	var keysToDelete [][]byte
 	for it.Seek(prefix); it.Valid(); it.Next() {
@@ -219,11 +225,20 @@ func (e *DefaultEngine) ScanOutEdges(txn x.KVTxn, shardID uint16, ns uint32, att
 }
 
 func (e *DefaultEngine) ScanOutEdgesFrom(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, fromUID, afterUID uint64) (EdgeIterator, error) {
+	return e.scanOutEdges(txn, shardID, ns, attrID, fromUID, afterUID, false)
+}
+
+func (e *DefaultEngine) ScanOutEdgesKeyOnly(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, fromUID, afterUID uint64) (EdgeIterator, error) {
+	return e.scanOutEdges(txn, shardID, ns, attrID, fromUID, afterUID, true)
+}
+
+func (e *DefaultEngine) scanOutEdges(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, fromUID, afterUID uint64, keyOnly bool) (EdgeIterator, error) {
 	prefix := EdgePrefix(shardID, ns, attrID, fromUID)
 	opt := x.KVIterOpts{
 		Prefix:         prefix,
-		PrefetchValues: true,
+		PrefetchValues: !keyOnly,
 		PrefetchSize:   100,
+		KeyOnly:        keyOnly,
 	}
 
 	it := txn.NewIterator(opt)
@@ -235,8 +250,9 @@ func (e *DefaultEngine) ScanOutEdgesFrom(txn x.KVTxn, shardID uint16, ns uint32,
 	}
 
 	return &edgeIterator{
-		it:     it,
-		prefix: prefix,
+		it:      it,
+		prefix:  prefix,
+		keyOnly: keyOnly,
 	}, nil
 }
 
@@ -255,11 +271,20 @@ func (e *DefaultEngine) ScanInEdges(txn x.KVTxn, shardID uint16, ns uint32, attr
 }
 
 func (e *DefaultEngine) ScanInEdgesFrom(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, toUID, afterUID uint64) (EdgeIterator, error) {
+	return e.scanInEdges(txn, shardID, ns, attrID, toUID, afterUID, false)
+}
+
+func (e *DefaultEngine) ScanInEdgesKeyOnly(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, toUID, afterUID uint64) (EdgeIterator, error) {
+	return e.scanInEdges(txn, shardID, ns, attrID, toUID, afterUID, true)
+}
+
+func (e *DefaultEngine) scanInEdges(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, toUID, afterUID uint64, keyOnly bool) (EdgeIterator, error) {
 	prefix := ReversePrefix(shardID, ns, attrID, toUID)
 	opt := x.KVIterOpts{
 		Prefix:         prefix,
-		PrefetchValues: true,
+		PrefetchValues: !keyOnly,
 		PrefetchSize:   100,
+		KeyOnly:        keyOnly,
 	}
 
 	it := txn.NewIterator(opt)
@@ -271,8 +296,9 @@ func (e *DefaultEngine) ScanInEdgesFrom(txn x.KVTxn, shardID uint16, ns uint32, 
 	}
 
 	return &edgeIterator{
-		it:     it,
-		prefix: prefix,
+		it:      it,
+		prefix:  prefix,
+		keyOnly: keyOnly,
 	}, nil
 }
 
@@ -307,6 +333,7 @@ func (e *DefaultEngine) ScanIndexWithContext(ctx context.Context, txn x.KVTxn, s
 		Prefix:         prefix,
 		PrefetchValues: false, // 索引只需读 Key 中的末尾 8 字节 UID，无需拉取 Value
 		PrefetchSize:   prefetchSize,
+		KeyOnly:        true,
 	}
 
 	it := txn.NewIterator(opt)
@@ -363,6 +390,7 @@ func (e *DefaultEngine) ScanIndexExtremum(txn x.KVTxn, shardID uint16, ns uint32
 		PrefetchValues: false,
 		PrefetchSize:   1,
 		IsReverse:      isMax,
+		KeyOnly:        true,
 	}
 
 	it := txn.NewIterator(opt)

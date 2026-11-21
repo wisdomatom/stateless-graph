@@ -430,6 +430,7 @@ type KVIterOpts struct {
 	AllVersions    bool
 	PrefetchValues bool
 	PrefetchSize   int
+	KeyOnly        bool
 }
 
 type newUidsKey struct{}

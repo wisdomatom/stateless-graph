@@ -173,6 +173,7 @@ func (t *tikvDB) DropAll() error {
 		if err != nil {
 			return err
 		}
+		txn.GetSnapshot().SetKeyOnly(true)
 		it, err := txn.Iter([]byte{}, nil)
 		if err != nil {
 			_ = txn.Rollback()
@@ -527,6 +528,7 @@ func (tx *tikvTxn) newIteratorNoLock(opt KVIterOpts) KVIterator {
 	} else if opt.PrefetchSize == 1 {
 		tx.txn.GetSnapshot().SetScanBatchSize(2)
 	}
+	tx.txn.GetSnapshot().SetKeyOnly(opt.KeyOnly)
 
 	if opt.IsReverse {
 		if len(opt.Prefix) > 0 {
@@ -542,6 +544,9 @@ func (tx *tikvTxn) newIteratorNoLock(opt KVIterOpts) KVIterator {
 		iter, err = tx.txn.Iter(initialKey, upperBound)
 	}
 	if err != nil {
+		if opt.KeyOnly {
+			tx.txn.GetSnapshot().SetKeyOnly(false)
+		}
 		return nil
 	}
 	return &tikvIterator{
@@ -550,6 +555,7 @@ func (tx *tikvTxn) newIteratorNoLock(opt KVIterOpts) KVIterator {
 		iter:      iter.(tikvInternalIterator),
 		prefix:    opt.Prefix,
 		isReverse: opt.IsReverse,
+		keyOnly:   opt.KeyOnly,
 		currKey:   initialKey,
 		consumed:  false,
 	}
@@ -658,6 +664,7 @@ type tikvIterator struct {
 	iter      tikvInternalIterator
 	prefix    []byte
 	isReverse bool
+	keyOnly   bool
 	currKey   []byte
 	consumed  bool
 }
@@ -681,6 +688,7 @@ func (it *tikvIterator) Rewind() {
 	if it.iter != nil {
 		it.iter.Close()
 	}
+	it.txn.GetSnapshot().SetKeyOnly(it.keyOnly)
 	var err error
 	if it.isReverse {
 		it.iter, err = it.txn.IterReverse(startKey)
@@ -724,6 +732,7 @@ func (it *tikvIterator) Seek(key []byte) {
 	if it.iter != nil {
 		it.iter.Close()
 	}
+	it.txn.GetSnapshot().SetKeyOnly(it.keyOnly)
 	var err error
 	if it.isReverse {
 		it.iter, err = it.txn.IterReverse(startKey)
@@ -763,7 +772,12 @@ func (it *tikvIterator) Item() KVItem {
 }
 
 func (it *tikvIterator) Close() {
-	it.iter.Close()
+	if it.iter != nil {
+		it.iter.Close()
+	}
+	if it.keyOnly && it.txn != nil {
+		it.txn.GetSnapshot().SetKeyOnly(false)
+	}
 }
 
 type tikvWriteBatch struct {

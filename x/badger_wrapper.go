@@ -280,7 +280,7 @@ func (t *badgerTxn) NewIterator(opt KVIterOpts) KVIterator {
 	bopt.Prefix = opt.Prefix
 	bopt.Reverse = opt.IsReverse
 	bopt.AllVersions = opt.AllVersions
-	bopt.PrefetchValues = opt.PrefetchValues
+	bopt.PrefetchValues = opt.PrefetchValues && !opt.KeyOnly
 	bopt.PrefetchSize = opt.PrefetchSize
 	return &badgerIterator{it: t.txn.NewIterator(bopt)}
 }
