@@ -2,6 +2,7 @@ package flat
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 
 	"github.com/wisdomatom/stateless-graph/x"
@@ -108,6 +109,7 @@ type Engine interface {
 	DeleteIndex(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, token []byte, uid uint64) error
 	ScanIndex(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, token []byte) ([]uint64, error)
 	ScanIndexWithOptions(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, token []byte, afterUID uint64, limit int) ([]uint64, error)
+	ScanIndexWithContext(ctx context.Context, txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, token []byte, afterUID uint64, limit int) ([]uint64, error)
 	ScanIndexExtremum(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, tokID byte, isMax bool) ([]byte, uint64, bool, error)
 }
 
@@ -289,6 +291,13 @@ func (e *DefaultEngine) ScanIndex(txn x.KVTxn, shardID uint16, ns uint32, attrID
 }
 
 func (e *DefaultEngine) ScanIndexWithOptions(txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, token []byte, afterUID uint64, limit int) ([]uint64, error) {
+	return e.ScanIndexWithContext(context.Background(), txn, shardID, ns, attrID, token, afterUID, limit)
+}
+
+func (e *DefaultEngine) ScanIndexWithContext(ctx context.Context, txn x.KVTxn, shardID uint16, ns uint32, attrID uint32, token []byte, afterUID uint64, limit int) ([]uint64, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	prefix := IndexPrefix(shardID, ns, attrID, token)
 	prefetchSize := 5000
 	if limit > 0 && limit < prefetchSize {
@@ -314,7 +323,14 @@ func (e *DefaultEngine) ScanIndexWithOptions(txn x.KVTxn, shardID uint16, ns uin
 	}
 	uids := make([]uint64, 0, capacity)
 
+	steps := 0
 	for it.Seek(seekKey); it.Valid(); it.Next() {
+		steps++
+		if steps&127 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
 		key := it.Item().Key()
 		if !bytes.HasPrefix(key, prefix) {
 			break

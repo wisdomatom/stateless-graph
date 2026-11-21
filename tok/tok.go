@@ -610,6 +610,29 @@ func (t BoolTokenizer) Identifier() byte { return IdentBool }
 func (t BoolTokenizer) IsSortable() bool { return false }
 func (t BoolTokenizer) IsLossy() bool    { return false }
 
+// ASCIILower lowercases ASCII uppercase letters ('A'-'Z') without altering byte length or non-ASCII bytes.
+func ASCIILower(s string) string {
+	hasUpper := false
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 'A' && s[i] <= 'Z' {
+			hasUpper = true
+			break
+		}
+	}
+	if !hasUpper {
+		return s
+	}
+	b := make([]byte, len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		b[i] = c
+	}
+	return string(b)
+}
+
 // TrigramTokenizer returns trigram tokens from string data.
 type TrigramTokenizer struct{}
 
@@ -620,6 +643,7 @@ func (t TrigramTokenizer) Tokens(v interface{}) ([]string, error) {
 	if !ok {
 		return nil, errors.Errorf("Trigram indices only supported for string types")
 	}
+	value = ASCIILower(value)
 	l := len(value) - 2
 	if l > 0 {
 		tokens := make([]string, l)
@@ -707,6 +731,6 @@ func EncodeGeoTokens(tokens []string) {
 // EncodeRegexTokens encodes the given list of strings as regex tokens.
 func EncodeRegexTokens(tokens []string) {
 	for i := 0; i < len(tokens); i++ {
-		tokens[i] = encodeToken(tokens[i], TrigramTokenizer{}.Identifier())
+		tokens[i] = encodeToken(ASCIILower(tokens[i]), TrigramTokenizer{}.Identifier())
 	}
 }

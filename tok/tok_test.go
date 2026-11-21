@@ -173,7 +173,7 @@ func TestTrigramTokenizer(t *testing.T) {
 	require.Equal(t, 11, len(tokens))
 	id := tokenizer.Identifier()
 	expected := []string{
-		encodeToken("Dgr", id),
+		encodeToken("dgr", id),
 		encodeToken("gra", id),
 		encodeToken("rap", id),
 		encodeToken("aph", id),

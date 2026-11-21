@@ -33,6 +33,15 @@ var logOnce sync.Once
 var tikvTxns sync.Map
 var activeTikvTxns sync.Map // map[uint64]*tikvTxn
 
+// IsActiveWriteTs reports whether the given timestamp belongs to an uncommitted write transaction.
+func IsActiveWriteTs(ts uint64) bool {
+	if ts == 0 || ts == math.MaxUint64 {
+		return false
+	}
+	_, ok := activeTikvTxns.Load(ts)
+	return ok
+}
+
 func NewTiKVKV(pdAddrs []string) (KVDB, error) {
 	logOnce.Do(func() {
 		l, p, _ := log.InitLogger(&log.Config{Level: "warn"})

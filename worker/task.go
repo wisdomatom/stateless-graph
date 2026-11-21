@@ -1072,7 +1072,7 @@ func (qs *queryState) handleRegexFunction(ctx context.Context, arg funcArgs) err
 		attribute.Bool("trigram_index_found", useIndex),
 		attribute.Bool("func_at_root", arg.srcFn.isFuncAtRoot)))
 
-	query := cindex.RegexpQuery(arg.srcFn.regex.Syntax)
+	query := cindex.RegexpQuery(foldRegexSyntaxForTrigram(arg.srcFn.regex.Syntax))
 	empty := pb.List{}
 	var uids *pb.List
 
@@ -1096,7 +1096,7 @@ func (qs *queryState) handleRegexFunction(ctx context.Context, arg funcArgs) err
 	case useIndex:
 		readTxn := pstore.NewTransactionAt(arg.q.ReadTs, false)
 		defer readTxn.Discard()
-		uids, err = uidsForRegex(readTxn, attr, arg, query, &empty)
+		uids, err = uidsForRegex(ctx, readTxn, attr, arg, query, &empty)
 		if err != nil {
 			return err
 		}
