@@ -156,7 +156,7 @@ func (s *ServerState) InitStorage() {
 				currentMax = binary.BigEndian.Uint64(val)
 			}
 
-			newMax := currentMax + 1000000
+			newMax := currentMax + 30000
 			buf := make([]byte, 8)
 			binary.BigEndian.PutUint64(buf, newMax)
 
