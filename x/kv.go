@@ -253,6 +253,39 @@ func SetNextUidRange(start, end uint64) {
 	glog.Infof("UID range leased: [%d, %d]", start, end)
 }
 
+// UidLeaseSnapshot captures the current in-memory UID allocator state of this node.
+type UidLeaseSnapshot struct {
+	CurrentUid        uint64
+	LocalMaxUid       uint64
+	LocalRemaining    uint64
+	HasPrefetchedNext bool
+	PrefetchedStart   uint64
+	PrefetchedEnd     uint64
+}
+
+// GetUidLeaseSnapshot returns a point-in-time snapshot of local UID allocation state.
+func GetUidLeaseSnapshot() UidLeaseSnapshot {
+	uidMu.Lock()
+	defer uidMu.Unlock()
+	cur := atomic.LoadUint64(&uidCounter)
+	max := atomic.LoadUint64(&uidMax)
+	var rem uint64
+	if max > cur {
+		rem = max - cur
+	}
+	snap := UidLeaseSnapshot{
+		CurrentUid:     cur,
+		LocalMaxUid:    max,
+		LocalRemaining: rem,
+	}
+	if uidNext != nil {
+		snap.HasPrefetchedNext = true
+		snap.PrefetchedStart = uidNext.start
+		snap.PrefetchedEnd = uidNext.end
+	}
+	return snap
+}
+
 var ErrKeyNotFound = badger.ErrKeyNotFound
 
 const (

@@ -258,3 +258,28 @@ func (s *ServerState) AllocateStartTs() uint64 {
 	Oracle().SetMaxAssigned(ts)
 	return ts
 }
+
+// GetStorageMaxLeasedUid reads the global maximum leased UID from underlying storage (TiKV/Badger).
+func GetStorageMaxLeasedUid() (uint64, error) {
+	if State.Pstore == nil {
+		return 0, nil
+	}
+	txn := State.Pstore.NewTransactionAt(math.MaxUint64, false)
+	defer txn.Discard()
+
+	item, err := txn.Get([]byte("_dgraph_uid_lease_"))
+	if err == x.ErrKeyNotFound {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	val, err := item.ValueCopy(nil)
+	if err != nil {
+		return 0, err
+	}
+	if len(val) < 8 {
+		return 0, nil
+	}
+	return binary.BigEndian.Uint64(val), nil
+}

@@ -346,3 +346,32 @@ func (r *EmbedDgraph) Close() {
 		_ = r.listenerZero.Close()
 	}
 }
+
+// UidLeaseInfo combines global storage UID lease state with local in-memory allocator state.
+type UidLeaseInfo struct {
+	StorageMaxUid     uint64
+	CurrentUid        uint64
+	LocalMaxUid       uint64
+	LocalRemaining    uint64
+	HasPrefetchedNext bool
+	PrefetchedStart   uint64
+	PrefetchedEnd     uint64
+}
+
+// GetUidLeaseInfo returns the global leased max UID from TiKV/storage and the local allocator snapshot.
+func GetUidLeaseInfo() (*UidLeaseInfo, error) {
+	storageMax, err := worker.GetStorageMaxLeasedUid()
+	if err != nil {
+		return nil, err
+	}
+	snap := x.GetUidLeaseSnapshot()
+	return &UidLeaseInfo{
+		StorageMaxUid:     storageMax,
+		CurrentUid:        snap.CurrentUid,
+		LocalMaxUid:       snap.LocalMaxUid,
+		LocalRemaining:    snap.LocalRemaining,
+		HasPrefetchedNext: snap.HasPrefetchedNext,
+		PrefetchedStart:   snap.PrefetchedStart,
+		PrefetchedEnd:     snap.PrefetchedEnd,
+	}, nil
+}
