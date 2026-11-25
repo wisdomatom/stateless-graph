@@ -269,7 +269,7 @@ func (c *inProcessClient) CheckVersion(ctx context.Context, in *api.Check, opts 
 }
 
 func (c *inProcessClient) RunDQL(ctx context.Context, in *api.RunDQLRequest, opts ...grpc.CallOption) (*api.Response, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method RunDQL not implemented")
+	return c.server.RunDQL(localContext(ctx), in)
 }
 
 func (c *inProcessClient) AllocateIDs(ctx context.Context, in *api.AllocateIDsRequest, opts ...grpc.CallOption) (*api.AllocateIDsResponse, error) {
