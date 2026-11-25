@@ -21,6 +21,7 @@ const (
 	KeyTypeEdge    byte = 0x02 // 正向关系边 (Forward Edge)
 	KeyTypeReverse byte = 0x03 // 反向关系边 (Reverse Edge)
 	KeyTypeIndex   byte = 0x04 // 二级索引项 (Secondary Index)
+	KeyTypeUnique  byte = 0x05 // 唯一索引项 (Unique Index: 不含 UID，支持 1 次 BatchGet 批量查重与 TiKV 行锁互斥)
 )
 
 const (
@@ -91,9 +92,9 @@ func EncodeListDataKey(shardID uint16, ns uint32, attrID uint32, uid uint64, ite
 	return buf
 }
 
-// PredicatePrefixes 生成指定 Predicate 在 Flat 存储下的所有前缀 (Data, Edge, Reverse, Index)
+// PredicatePrefixes 生成指定 Predicate 在 Flat 存储下的所有前缀 (Data, Edge, Reverse, Index, Unique)
 func PredicatePrefixes(shardID uint16, ns uint32, attrID uint32) [][]byte {
-	keyTypes := []byte{KeyTypeData, KeyTypeEdge, KeyTypeReverse, KeyTypeIndex}
+	keyTypes := []byte{KeyTypeData, KeyTypeEdge, KeyTypeReverse, KeyTypeIndex, KeyTypeUnique}
 	prefixes := make([][]byte, len(keyTypes))
 	for i, kt := range keyTypes {
 		buf := make([]byte, 11)
@@ -102,6 +103,16 @@ func PredicatePrefixes(shardID uint16, ns uint32, attrID uint32) [][]byte {
 		prefixes[i] = buf
 	}
 	return prefixes
+}
+
+// EncodeUniqueKey 编码唯一约束键 (不含 UID，支持 BatchGet 点查与事务行级互斥锁)
+// 格式: ShardID(2B) || Namespace(4B) || 0x05 || AttrID(4B) || Token(N Bytes)
+func EncodeUniqueKey(shardID uint16, ns uint32, attrID uint32, token []byte) []byte {
+	buf := make([]byte, 11+len(token))
+	writeHeader(buf, shardID, ns, KeyTypeUnique)
+	binary.BigEndian.PutUint32(buf[7:11], attrID)
+	copy(buf[11:], token)
+	return buf
 }
 
 // EncodeEdgeKey 编码正向关系边键 (27 字节)

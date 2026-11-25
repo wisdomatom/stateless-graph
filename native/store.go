@@ -2,6 +2,7 @@ package native
 
 import (
 	"context"
+	"encoding/binary"
 	"math"
 	"sync"
 	"time"
@@ -246,6 +247,81 @@ func (s *Store) BatchCheckIndexExists(ctx context.Context, ns uint32, rawAttr st
 		return nil, firstErr
 	}
 	return exists, nil
+}
+
+// BatchCheckAndReserveUnique checks uniqueness for a batch of values in a SINGLE
+// TiKV BatchGet RPC (replacing N separate Scan RPCs) and writes UniqueKey -> UID
+// entries into the current transaction so TiKV's row-level transaction locks
+// automatically prevent concurrent duplicate writes.
+// Returns (duplicateIndex, nil) where duplicateIndex >= 0 if a duplicate exists, or (-1, nil) if all unique.
+func (t *Txn) BatchCheckAndReserveUnique(ctx context.Context, bctx *BatchWriteContext, rawAttr string, values []any, uids []uint64) (int, error) {
+	n := len(values)
+	if n == 0 {
+		return -1, nil
+	}
+	meta, err := bctx.getMeta(ctx, rawAttr)
+	if err != nil {
+		return -1, err
+	}
+
+	// Pick deterministic equality tokenizer (exact > hash > first non-trigram).
+	var eqTok tok.Tokenizer
+	for _, tk := range meta.tokenizers {
+		if tk.Name() == "exact" {
+			eqTok = tk
+			break
+		}
+		if tk.Name() == "hash" && eqTok == nil {
+			eqTok = tk
+		} else if eqTok == nil && tk.Identifier() != tok.IdentTrigram {
+			eqTok = tk
+		}
+	}
+	if eqTok == nil {
+		return -1, errors.Errorf("native: no equality index tokenizer found for unique predicate %s", rawAttr)
+	}
+
+	keys := make([][]byte, n)
+	for i, v := range values {
+		typedVal, cerr := toTypedVal(v, meta.schemaType)
+		if cerr != nil {
+			return -1, cerr
+		}
+		toks, terr := tok.BuildTokens(typedVal.Value, eqTok)
+		if terr != nil {
+			return -1, terr
+		}
+		if len(toks) > 0 {
+			keys[i] = flat.EncodeUniqueKey(0, t.ns, meta.attrID, []byte(toks[0]))
+		}
+	}
+
+	// 1 single BatchGet RPC for all N unique values!
+	existing, err := t.kvTxn.BatchGet(keys)
+	if err != nil {
+		return -1, err
+	}
+	for i, k := range keys {
+		if len(k) == 0 {
+			continue
+		}
+		if val, found := existing[string(k)]; found && len(val) > 0 {
+			return i, nil
+		}
+	}
+
+	// Reserve all unique keys inside this write transaction (prevents concurrent race!).
+	for i, k := range keys {
+		if len(k) == 0 {
+			continue
+		}
+		var uidBuf [8]byte
+		binary.BigEndian.PutUint64(uidBuf[:], uids[i])
+		if err := t.kvTxn.Set(k, uidBuf[:]); err != nil {
+			return -1, err
+		}
+	}
+	return -1, nil
 }
 
 // SetNodeFields writes all scalar fields (and their indexes) of a new node directly into

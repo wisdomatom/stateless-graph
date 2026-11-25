@@ -167,6 +167,9 @@ func ApplyFlatMutation(ctx context.Context, edge *pb.DirectedEdge, txn x.KVTxn) 
 							if tokens, err := tok.BuildTokens(sv.Value, tok.GetTokenizerForLang(t, edge.Lang)); err == nil {
 								for _, token := range tokens {
 									_ = GlobalFlatEngine.DeleteIndex(txn, shardID, ns, attrID, []byte(token), edge.Entity)
+									if t.Identifier() == tok.IdentExact || t.Identifier() == tok.IdentHash {
+										_ = txn.Delete(flat.EncodeUniqueKey(0, ns, attrID, []byte(token)))
+									}
 								}
 							}
 						}
@@ -186,6 +189,9 @@ func ApplyFlatMutation(ctx context.Context, edge *pb.DirectedEdge, txn x.KVTxn) 
 							if tokens, err := tok.BuildTokens(sv.Value, tok.GetTokenizerForLang(t, edge.Lang)); err == nil {
 								for _, token := range tokens {
 									_ = GlobalFlatEngine.DeleteIndex(txn, shardID, ns, attrID, []byte(token), edge.Entity)
+									if t.Identifier() == tok.IdentExact || t.Identifier() == tok.IdentHash {
+										_ = txn.Delete(flat.EncodeUniqueKey(0, ns, attrID, []byte(token)))
+									}
 								}
 							}
 						}
