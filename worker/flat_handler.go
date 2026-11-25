@@ -4,6 +4,7 @@ import (
 	"context"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/dgryski/go-farm"
 	"github.com/pkg/errors"
@@ -19,6 +20,25 @@ import (
 )
 
 var GlobalFlatEngine = flat.NewEngine()
+
+type parsedAttrCacheEntry struct {
+	ns      uint32
+	rawAttr string
+	attrID  uint32
+}
+
+var parsedAttrCache sync.Map // map[string]parsedAttrCacheEntry
+
+func resolveAttrMeta(attr string) (uint32, string, uint32) {
+	if v, ok := parsedAttrCache.Load(attr); ok {
+		e := v.(parsedAttrCacheEntry)
+		return e.ns, e.rawAttr, e.attrID
+	}
+	ns, rawAttr := parseNamespaceSafe(attr)
+	attrID := flat.PredicateToAttrID(rawAttr)
+	parsedAttrCache.Store(attr, parsedAttrCacheEntry{ns: ns, rawAttr: rawAttr, attrID: attrID})
+	return ns, rawAttr, attrID
+}
 
 func parseNamespaceSafe(attr string) (uint32, string) {
 	if !strings.Contains(attr, x.NsSeparator) {
@@ -38,14 +58,19 @@ func ApplyFlatMutation(ctx context.Context, edge *pb.DirectedEdge, txn x.KVTxn) 
 		return errors.Errorf("Predicate cannot be empty")
 	}
 
-	ns, rawAttr := parseNamespaceSafe(edge.Attr)
-	attrID := flat.PredicateToAttrID(rawAttr)
+	ns, _, attrID := resolveAttrMeta(edge.Attr)
 	shardID := flat.CalculateShardID(edge.Entity, 0) // 第一期单桶模式
 	isNewEntity := x.IsNewUid(ctx, edge.Entity)
 
+	// Single schema lookup per edge to avoid 4-5 repeated schema.State() RLock acquisitions.
+	su, hasSchema := schema.State().Get(ctx, edge.Attr)
+	isList := hasSchema && su.List
+	isIndexed := hasSchema && (len(su.Tokenizer) > 0 || len(su.IndexSpecs) > 0)
+	isReversed := hasSchema && su.Directive == pb.SchemaUpdate_REVERSE
+	schemaType := types.TypeID(su.ValueType)
+
 	// 1. 关系边处理 (Edge.ValueId != 0)
 	if edge.ValueId != 0 {
-		isList := schema.State().IsList(edge.Attr)
 		if !isList && !isNewEntity {
 			lockKey := flat.EncodeDataKey(shardID, ns, attrID, edge.Entity)
 			if err := txn.LockKeys(ctx, lockKey); err != nil {
@@ -69,7 +94,7 @@ func ApplyFlatMutation(ctx context.Context, edge *pb.DirectedEdge, txn x.KVTxn) 
 				return err
 			}
 			// 删除反向边 (如果已开启)
-			if schema.State().IsReversed(ctx, edge.Attr) {
+			if isReversed {
 				revShard := flat.CalculateShardID(edge.ValueId, 0)
 				if err := GlobalFlatEngine.DeleteReverseEdge(txn, revShard, ns, attrID, edge.ValueId, edge.Entity); err != nil {
 					return err
@@ -83,7 +108,7 @@ func ApplyFlatMutation(ctx context.Context, edge *pb.DirectedEdge, txn x.KVTxn) 
 						oldToUID := it.Entry().ToUID
 						if oldToUID != edge.ValueId {
 							_ = GlobalFlatEngine.DeleteEdge(txn, shardID, ns, attrID, edge.Entity, oldToUID)
-							if schema.State().IsReversed(ctx, edge.Attr) {
+							if isReversed {
 								revShard := flat.CalculateShardID(oldToUID, 0)
 								_ = GlobalFlatEngine.DeleteReverseEdge(txn, revShard, ns, attrID, oldToUID, edge.Entity)
 							}
@@ -98,7 +123,7 @@ func ApplyFlatMutation(ctx context.Context, edge *pb.DirectedEdge, txn x.KVTxn) 
 				return err
 			}
 			// 添加/覆盖反向边 (如果已开启)
-			if schema.State().IsReversed(ctx, edge.Attr) {
+			if isReversed {
 				revShard := flat.CalculateShardID(edge.ValueId, 0)
 				if err := GlobalFlatEngine.AddReverseEdge(txn, revShard, ns, attrID, edge.ValueId, edge.Entity, facetsBytes); err != nil {
 					return err
@@ -109,21 +134,20 @@ func ApplyFlatMutation(ctx context.Context, edge *pb.DirectedEdge, txn x.KVTxn) 
 	}
 
 	// 2. 标量属性处理 (Edge.ValueId == 0)
-	isScalarList := schema.State().IsList(edge.Attr)
+	isScalarList := isList
 	if edge.Op == pb.DirectedEdge_DEL {
 		if isScalarList {
 			if isStarAll(edge.Value) || len(edge.Value) == 0 {
 				// 删除整个列表及索引
-				if schema.State().IsIndexed(ctx, edge.Attr) {
+				if isIndexed && schemaType.IsScalar() {
 					if _, valBytesList, err := GlobalFlatEngine.ScanData(txn, shardID, ns, attrID, edge.Entity); err == nil {
-						if schemaType, err := schema.State().TypeOf(edge.Attr); err == nil && schemaType.IsScalar() {
-							for _, oldValBytes := range valBytesList {
-								if sv, err := types.Convert(types.Val{Tid: types.BinaryID, Value: oldValBytes}, schemaType); err == nil {
-									for _, t := range schema.State().Tokenizer(ctx, edge.Attr) {
-										if tokens, err := tok.BuildTokens(sv.Value, tok.GetTokenizerForLang(t, edge.Lang)); err == nil {
-											for _, token := range tokens {
-												_ = GlobalFlatEngine.DeleteIndex(txn, shardID, ns, attrID, []byte(token), edge.Entity)
-											}
+						tokenizers := schema.State().Tokenizer(ctx, edge.Attr)
+						for _, oldValBytes := range valBytesList {
+							if sv, err := types.Convert(types.Val{Tid: types.BinaryID, Value: oldValBytes}, schemaType); err == nil {
+								for _, t := range tokenizers {
+									if tokens, err := tok.BuildTokens(sv.Value, tok.GetTokenizerForLang(t, edge.Lang)); err == nil {
+										for _, token := range tokens {
+											_ = GlobalFlatEngine.DeleteIndex(txn, shardID, ns, attrID, []byte(token), edge.Entity)
 										}
 									}
 								}
@@ -137,14 +161,12 @@ func ApplyFlatMutation(ctx context.Context, edge *pb.DirectedEdge, txn x.KVTxn) 
 			} else {
 				// 删除列表中的单个项
 				itemHash := farm.Fingerprint64(edge.Value)
-				if schema.State().IsIndexed(ctx, edge.Attr) {
-					if schemaType, err := schema.State().TypeOf(edge.Attr); err == nil && schemaType.IsScalar() {
-						if sv, err := types.Convert(types.Val{Tid: types.BinaryID, Value: edge.Value}, schemaType); err == nil {
-							for _, t := range schema.State().Tokenizer(ctx, edge.Attr) {
-								if tokens, err := tok.BuildTokens(sv.Value, tok.GetTokenizerForLang(t, edge.Lang)); err == nil {
-									for _, token := range tokens {
-										_ = GlobalFlatEngine.DeleteIndex(txn, shardID, ns, attrID, []byte(token), edge.Entity)
-									}
+				if isIndexed && schemaType.IsScalar() {
+					if sv, err := types.Convert(types.Val{Tid: types.BinaryID, Value: edge.Value}, schemaType); err == nil {
+						for _, t := range schema.State().Tokenizer(ctx, edge.Attr) {
+							if tokens, err := tok.BuildTokens(sv.Value, tok.GetTokenizerForLang(t, edge.Lang)); err == nil {
+								for _, token := range tokens {
+									_ = GlobalFlatEngine.DeleteIndex(txn, shardID, ns, attrID, []byte(token), edge.Entity)
 								}
 							}
 						}
@@ -156,16 +178,14 @@ func ApplyFlatMutation(ctx context.Context, edge *pb.DirectedEdge, txn x.KVTxn) 
 			}
 		} else {
 			// 单值删除
-			if schema.State().IsIndexed(ctx, edge.Attr) {
+			if isIndexed && schemaType.IsScalar() {
 				_, oldValBytes, err := GlobalFlatEngine.GetData(txn, shardID, ns, attrID, edge.Entity)
 				if err == nil && len(oldValBytes) > 0 {
-					if schemaType, err := schema.State().TypeOf(edge.Attr); err == nil && schemaType.IsScalar() {
-						if sv, err := types.Convert(types.Val{Tid: types.BinaryID, Value: oldValBytes}, schemaType); err == nil {
-							for _, t := range schema.State().Tokenizer(ctx, edge.Attr) {
-								if tokens, err := tok.BuildTokens(sv.Value, tok.GetTokenizerForLang(t, edge.Lang)); err == nil {
-									for _, token := range tokens {
-										_ = GlobalFlatEngine.DeleteIndex(txn, shardID, ns, attrID, []byte(token), edge.Entity)
-									}
+					if sv, err := types.Convert(types.Val{Tid: types.BinaryID, Value: oldValBytes}, schemaType); err == nil {
+						for _, t := range schema.State().Tokenizer(ctx, edge.Attr) {
+							if tokens, err := tok.BuildTokens(sv.Value, tok.GetTokenizerForLang(t, edge.Lang)); err == nil {
+								for _, token := range tokens {
+									_ = GlobalFlatEngine.DeleteIndex(txn, shardID, ns, attrID, []byte(token), edge.Entity)
 								}
 							}
 						}
@@ -183,15 +203,13 @@ func ApplyFlatMutation(ctx context.Context, edge *pb.DirectedEdge, txn x.KVTxn) 
 			if err := GlobalFlatEngine.AddListData(txn, shardID, ns, attrID, edge.Entity, itemHash, byte(edge.ValueType), edge.Value); err != nil {
 				return err
 			}
-			if schema.State().IsIndexed(ctx, edge.Attr) {
-				if schemaType, err := schema.State().TypeOf(edge.Attr); err == nil && schemaType.IsScalar() {
-					if sv, err := types.Convert(types.Val{Tid: types.BinaryID, Value: edge.Value}, schemaType); err == nil {
-						for _, t := range schema.State().Tokenizer(ctx, edge.Attr) {
-							if tokens, err := tok.BuildTokens(sv.Value, tok.GetTokenizerForLang(t, edge.Lang)); err == nil {
-								for _, token := range tokens {
-									if err := GlobalFlatEngine.AddIndex(txn, shardID, ns, attrID, []byte(token), edge.Entity); err != nil {
-										return err
-									}
+			if isIndexed && schemaType.IsScalar() {
+				if sv, err := types.Convert(types.Val{Tid: types.BinaryID, Value: edge.Value}, schemaType); err == nil {
+					for _, t := range schema.State().Tokenizer(ctx, edge.Attr) {
+						if tokens, err := tok.BuildTokens(sv.Value, tok.GetTokenizerForLang(t, edge.Lang)); err == nil {
+							for _, token := range tokens {
+								if err := GlobalFlatEngine.AddIndex(txn, shardID, ns, attrID, []byte(token), edge.Entity); err != nil {
+									return err
 								}
 							}
 						}
@@ -200,29 +218,27 @@ func ApplyFlatMutation(ctx context.Context, edge *pb.DirectedEdge, txn x.KVTxn) 
 			}
 		} else {
 			// 单值写入 (先清旧索引，再加新索引，再写入单值)
-			if schema.State().IsIndexed(ctx, edge.Attr) {
-				schemaType, err := schema.State().TypeOf(edge.Attr)
-				if err == nil && schemaType.IsScalar() {
-					if !isNewEntity {
-						if _, oldValBytes, err := GlobalFlatEngine.GetData(txn, shardID, ns, attrID, edge.Entity); err == nil && len(oldValBytes) > 0 {
-							if oldSv, err := types.Convert(types.Val{Tid: types.BinaryID, Value: oldValBytes}, schemaType); err == nil {
-								for _, t := range schema.State().Tokenizer(ctx, edge.Attr) {
-									if tokens, err := tok.BuildTokens(oldSv.Value, tok.GetTokenizerForLang(t, edge.Lang)); err == nil {
-										for _, token := range tokens {
-											_ = GlobalFlatEngine.DeleteIndex(txn, shardID, ns, attrID, []byte(token), edge.Entity)
-										}
+			if isIndexed && schemaType.IsScalar() {
+				tokenizers := schema.State().Tokenizer(ctx, edge.Attr)
+				if !isNewEntity {
+					if _, oldValBytes, err := GlobalFlatEngine.GetData(txn, shardID, ns, attrID, edge.Entity); err == nil && len(oldValBytes) > 0 {
+						if oldSv, err := types.Convert(types.Val{Tid: types.BinaryID, Value: oldValBytes}, schemaType); err == nil {
+							for _, t := range tokenizers {
+								if tokens, err := tok.BuildTokens(oldSv.Value, tok.GetTokenizerForLang(t, edge.Lang)); err == nil {
+									for _, token := range tokens {
+										_ = GlobalFlatEngine.DeleteIndex(txn, shardID, ns, attrID, []byte(token), edge.Entity)
 									}
 								}
 							}
 						}
 					}
-					if sv, err := types.Convert(types.Val{Tid: types.BinaryID, Value: edge.Value}, schemaType); err == nil {
-						for _, t := range schema.State().Tokenizer(ctx, edge.Attr) {
-							if tokens, err := tok.BuildTokens(sv.Value, tok.GetTokenizerForLang(t, edge.Lang)); err == nil {
-								for _, token := range tokens {
-									if err := GlobalFlatEngine.AddIndex(txn, shardID, ns, attrID, []byte(token), edge.Entity); err != nil {
-										return err
-									}
+				}
+				if sv, err := types.Convert(types.Val{Tid: types.BinaryID, Value: edge.Value}, schemaType); err == nil {
+					for _, t := range tokenizers {
+						if tokens, err := tok.BuildTokens(sv.Value, tok.GetTokenizerForLang(t, edge.Lang)); err == nil {
+							for _, token := range tokens {
+								if err := GlobalFlatEngine.AddIndex(txn, shardID, ns, attrID, []byte(token), edge.Entity); err != nil {
+									return err
 								}
 							}
 						}
@@ -232,19 +248,16 @@ func ApplyFlatMutation(ctx context.Context, edge *pb.DirectedEdge, txn x.KVTxn) 
 			if err := GlobalFlatEngine.SetData(txn, shardID, ns, attrID, edge.Entity, byte(edge.ValueType), edge.Value); err != nil {
 				return err
 			}
-			if schema.State().IsIndexed(ctx, edge.Attr) {
-				if schemaType, err := schema.State().TypeOf(edge.Attr); err == nil && schemaType == types.VFloatID {
-					if specs, err := schema.State().FactoryCreateSpec(ctx, edge.Attr); err == nil && len(specs) > 0 {
-						inVec := types.BytesAsFloatArray(edge.Value)
-						if indexer, err := specs[0].CreateIndex(edge.Attr); err == nil {
-							tc := hnsw.NewTxnCache(newFlatViTxn(txn, 0), 0)
-							if edges, err := indexer.Insert(ctx, tc, edge.Entity, inVec); err == nil {
-								for _, e := range edges {
-									ens, erawAttr := parseNamespaceSafe(e.Attr)
-									eattrID := flat.PredicateToAttrID(erawAttr)
-									eshardID := flat.CalculateShardID(e.Entity, 0)
-									_ = GlobalFlatEngine.SetData(txn, eshardID, ens, eattrID, e.Entity, 0, e.Value)
-								}
+			if isIndexed && schemaType == types.VFloatID {
+				if specs, err := schema.State().FactoryCreateSpec(ctx, edge.Attr); err == nil && len(specs) > 0 {
+					inVec := types.BytesAsFloatArray(edge.Value)
+					if indexer, err := specs[0].CreateIndex(edge.Attr); err == nil {
+						tc := hnsw.NewTxnCache(newFlatViTxn(txn, 0), 0)
+						if edges, err := indexer.Insert(ctx, tc, edge.Entity, inVec); err == nil {
+							for _, e := range edges {
+								ens, _, eattrID := resolveAttrMeta(e.Attr)
+								eshardID := flat.CalculateShardID(e.Entity, 0)
+								_ = GlobalFlatEngine.SetData(txn, eshardID, ens, eattrID, e.Entity, 0, e.Value)
 							}
 						}
 					}

@@ -456,7 +456,12 @@ func (tx *tikvTxn) SetWithMeta(key, val []byte, meta byte) error {
 	return tx.setWithMetaNoLock(key, val, meta)
 }
 
+var emptyMetaValZero = []byte{0, 0}
+
 func (tx *tikvTxn) setWithMetaNoLock(key, val []byte, meta byte) error {
+	if len(val) == 0 && meta == 0 {
+		return tx.txn.Set(key, emptyMetaValZero)
+	}
 	buf := make([]byte, 2+len(val))
 	buf[0] = meta
 	buf[1] = 0 // Reserved

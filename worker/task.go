@@ -1126,105 +1126,17 @@ func (qs *queryState) handleRegexFunction(ctx context.Context, arg funcArgs) err
 
 	filtered := &pb.List{}
 	if !isList && len(uids.Uids) > 1 {
-		// BatchGet optimization: avoid N+1 serial TiKV Get RPCs when verifying
-		// thousands of candidate UIDs against the exact regular expression.
-		ns, rawAttr := parseNamespaceSafe(attr)
-		attrID := flat.PredicateToAttrID(rawAttr)
-		const batchSize = 2000
-		numBatches := (len(uids.Uids) + batchSize - 1) / batchSize
-		batchResults := make([]map[string][]byte, numBatches)
-		batchKeys := make([][][]byte, numBatches)
-
-		for b := 0; b < numBatches; b++ {
-			start := b * batchSize
-			end := start + batchSize
-			if end > len(uids.Uids) {
-				end = len(uids.Uids)
-			}
-			keys := make([][]byte, end-start)
-			for idx, uid := range uids.Uids[start:end] {
-				shardID := flat.CalculateShardID(uid, 0)
-				keys[idx] = flat.EncodeDataKey(shardID, ns, attrID, uid)
-			}
-			batchKeys[b] = keys
+		vals, present, berr := qs.batchGetScalarVals(ctx, attr, uids.Uids, arg.q.ReadTs)
+		if berr != nil {
+			return berr
 		}
-
-		canParallel := pstore != nil && !x.IsActiveWriteTs(arg.q.ReadTs) && numBatches > 1
-		if canParallel {
-			const maxWorkers = 4
-			sem := make(chan struct{}, maxWorkers)
-			var wg sync.WaitGroup
-			var errMu sync.Mutex
-			var firstErr error
-			for b := 0; b < numBatches; b++ {
-				wg.Add(1)
-				go func(bi int) {
-					defer wg.Done()
-					select {
-					case sem <- struct{}{}:
-						defer func() { <-sem }()
-					case <-ctx.Done():
-						errMu.Lock()
-						if firstErr == nil {
-							firstErr = ctx.Err()
-						}
-						errMu.Unlock()
-						return
-					}
-					txn := pstore.NewTransactionAt(arg.q.ReadTs, false)
-					defer txn.Discard()
-					res, berr := txn.BatchGet(batchKeys[bi])
-					if berr != nil {
-						errMu.Lock()
-						if firstErr == nil {
-							firstErr = berr
-						}
-						errMu.Unlock()
-						return
-					}
-					batchResults[bi] = res
-				}(b)
+		for idx, uid := range uids.Uids {
+			if !present[idx] {
+				continue
 			}
-			wg.Wait()
-			if firstErr != nil {
-				return firstErr
-			}
-		} else {
-			txn := pstore.NewTransactionAt(arg.q.ReadTs, false)
-			defer txn.Discard()
-			for b := 0; b < numBatches; b++ {
-				if err := ctx.Err(); err != nil {
-					return err
-				}
-				res, berr := txn.BatchGet(batchKeys[b])
-				if berr != nil {
-					return berr
-				}
-				batchResults[b] = res
-			}
-		}
-
-		for b := 0; b < numBatches; b++ {
-			start := b * batchSize
-			end := start + batchSize
-			if end > len(uids.Uids) {
-				end = len(uids.Uids)
-			}
-			resMap := batchResults[b]
-			keys := batchKeys[b]
-			for idx, uid := range uids.Uids[start:end] {
-				rawVal, ok := resMap[string(keys[idx])]
-				if !ok || len(rawVal) <= 1 {
-					continue
-				}
-				val := types.Val{
-					Tid:   types.TypeID(rawVal[0]),
-					Value: rawVal[1:],
-				}
-				strVal, convErr := types.Convert(val, types.StringID)
-				if convErr == nil && matchRegex(strVal, arg.srcFn.regex) {
-					filtered.Uids = append(filtered.Uids, uid)
-				}
+			strVal, convErr := types.Convert(vals[idx], types.StringID)
+			if convErr == nil && matchRegex(strVal, arg.srcFn.regex) {
+				filtered.Uids = append(filtered.Uids, uid)
 			}
 		}
 	} else {
@@ -1297,6 +1209,7 @@ func (qs *queryState) handleCompareFunction(ctx context.Context, arg funcArgs) e
 	x.AssertTrue(len(arg.out.UidMatrix) > 0)
 	lang := langForFunc(arg.q.Langs)
 
+	isList := schema.State().IsList(attr)
 	filterRow := func(row int, compareFunc func(types.Val) bool) error {
 		select {
 		case <-ctx.Done():
@@ -1304,8 +1217,24 @@ func (qs *queryState) handleCompareFunction(ctx context.Context, arg funcArgs) e
 		default:
 		}
 
+		uidList := arg.out.UidMatrix[row]
+		if !isList && len(uidList.GetUids()) > 1 {
+			vals, present, berr := qs.batchGetScalarVals(ctx, attr, uidList.Uids, arg.q.ReadTs)
+			if berr != nil {
+				return berr
+			}
+			algo.ApplyFilter(uidList, func(uid uint64, i int) bool {
+				if !present[i] {
+					return false
+				}
+				dst, cerr := types.Convert(vals[i], typ)
+				return cerr == nil && compareFunc(dst)
+			})
+			return nil
+		}
+
 		var filterErr error
-		algo.ApplyFilter(arg.out.UidMatrix[row], func(uid uint64, i int) bool {
+		algo.ApplyFilter(uidList, func(uid uint64, i int) bool {
 			vals, err := qs.getValsForUID(attr, lang, uid, arg.q.ReadTs)
 			if err != nil {
 				return false
@@ -1319,7 +1248,7 @@ func (qs *queryState) handleCompareFunction(ctx context.Context, arg funcArgs) e
 			return false
 		})
 		if filterErr != nil {
-			return err
+			return filterErr
 		}
 
 		return nil
@@ -1411,28 +1340,44 @@ func (qs *queryState) handleMatchFunction(ctx context.Context, arg funcArgs) err
 
 	matchQuery := strings.Join(arg.srcFn.tokens, "")
 	filtered := &pb.List{}
-	for _, uid := range uids.Uids {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
+	maxDist := int(arg.srcFn.threshold[0])
+	if !isList && len(uids.Uids) > 1 {
+		vals, present, berr := qs.batchGetScalarVals(ctx, attr, uids.Uids, arg.q.ReadTs)
+		if berr != nil {
+			return berr
 		}
-		vals, err := qs.getValsForUID(attr, lang, uid, arg.q.ReadTs)
-		if err != nil {
-			if err == ErrNoValue {
+		for idx, uid := range uids.Uids {
+			if !present[idx] {
 				continue
 			}
-			return err
-		}
-
-		max := int(arg.srcFn.threshold[0])
-		for _, val := range vals {
-			// convert data from binary to appropriate format
-			strVal, err := types.Convert(val, types.StringID)
-			if err == nil && matchFuzzy(matchQuery, strVal.Value.(string), max) {
+			strVal, cerr := types.Convert(vals[idx], types.StringID)
+			if cerr == nil && matchFuzzy(matchQuery, strVal.Value.(string), maxDist) {
 				filtered.Uids = append(filtered.Uids, uid)
-				// NOTE: We only add the uid once.
-				break
+			}
+		}
+	} else {
+		for _, uid := range uids.Uids {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
+			vals, err := qs.getValsForUID(attr, lang, uid, arg.q.ReadTs)
+			if err != nil {
+				if err == ErrNoValue {
+					continue
+				}
+				return err
+			}
+
+			for _, val := range vals {
+				// convert data from binary to appropriate format
+				strVal, err := types.Convert(val, types.StringID)
+				if err == nil && matchFuzzy(matchQuery, strVal.Value.(string), maxDist) {
+					filtered.Uids = append(filtered.Uids, uid)
+					// NOTE: We only add the uid once.
+					break
+				}
 			}
 		}
 	}
@@ -1451,65 +1396,89 @@ func (qs *queryState) filterGeoFunction(ctx context.Context, arg funcArgs) error
 
 	attr := arg.q.Attr
 	uids := algo.MergeSorted(arg.out.UidMatrix)
-	numGo, width := x.DivideAndRule(len(uids.Uids))
-	span.AddEvent("Parallel processing details", trace.WithAttributes(
-		attribute.Int("uid_count", len(uids.Uids)),
-		attribute.Int("num_go", numGo),
-		attribute.Int("width", width)))
-
-	eg, egCtx := errgroup.WithContext(ctx)
-	filtered := make([]*pb.List, numGo)
-	filter := func(idx, start, end int) error {
-		filtered[idx] = &pb.List{}
-		out := filtered[idx]
-		for i := start; i < end; i++ {
-			uid := uids.Uids[i]
-			if i%100 == 0 {
-				select {
-				case <-egCtx.Done():
-					return egCtx.Err()
-				default:
-				}
-			}
-			vals, err := qs.getValsForUID(attr, "", uid, arg.q.ReadTs)
-			if err != nil {
+	isList := schema.State().IsList(attr)
+	final := &pb.List{}
+	if !isList && len(uids.Uids) > 1 {
+		vals, present, berr := qs.batchGetScalarVals(ctx, attr, uids.Uids, arg.q.ReadTs)
+		if berr != nil {
+			return berr
+		}
+		for idx, uid := range uids.Uids {
+			if !present[idx] {
 				continue
 			}
-			for _, val := range vals {
-				var rawBytes []byte
-				if b, ok := val.Value.([]byte); ok {
-					rawBytes = b
-				}
-				tv := pb.TaskValue{
-					ValType: pb.Posting_ValType(val.Tid),
-					Val:     rawBytes,
-				}
-				if types.MatchGeo(&tv, arg.srcFn.geoQuery) {
-					out.Uids = append(out.Uids, uid)
-					break
-				}
+			var rawBytes []byte
+			if b, ok := vals[idx].Value.([]byte); ok {
+				rawBytes = b
+			}
+			tv := pb.TaskValue{
+				ValType: pb.Posting_ValType(vals[idx].Tid),
+				Val:     rawBytes,
+			}
+			if types.MatchGeo(&tv, arg.srcFn.geoQuery) {
+				final.Uids = append(final.Uids, uid)
 			}
 		}
-		return nil
-	}
+	} else {
+		numGo, width := x.DivideAndRule(len(uids.Uids))
+		span.AddEvent("Parallel processing details", trace.WithAttributes(
+			attribute.Int("uid_count", len(uids.Uids)),
+			attribute.Int("num_go", numGo),
+			attribute.Int("width", width)))
 
-	for i := range numGo {
-		start := i * width
-		end := start + width
-		if end > len(uids.Uids) {
-			end = len(uids.Uids)
+		eg, egCtx := errgroup.WithContext(ctx)
+		filtered := make([]*pb.List, numGo)
+		filter := func(idx, start, end int) error {
+			filtered[idx] = &pb.List{}
+			out := filtered[idx]
+			for i := start; i < end; i++ {
+				uid := uids.Uids[i]
+				if i%100 == 0 {
+					select {
+					case <-egCtx.Done():
+						return egCtx.Err()
+					default:
+					}
+				}
+				vals, err := qs.getValsForUID(attr, "", uid, arg.q.ReadTs)
+				if err != nil {
+					continue
+				}
+				for _, val := range vals {
+					var rawBytes []byte
+					if b, ok := val.Value.([]byte); ok {
+						rawBytes = b
+					}
+					tv := pb.TaskValue{
+						ValType: pb.Posting_ValType(val.Tid),
+						Val:     rawBytes,
+					}
+					if types.MatchGeo(&tv, arg.srcFn.geoQuery) {
+						out.Uids = append(out.Uids, uid)
+						break
+					}
+				}
+			}
+			return nil
 		}
-		idx := i
-		eg.Go(func() error {
-			return filter(idx, start, end)
-		})
-	}
-	if err := eg.Wait(); err != nil {
-		return err
-	}
-	final := &pb.List{}
-	for _, out := range filtered {
-		final.Uids = append(final.Uids, out.Uids...)
+
+		for i := range numGo {
+			start := i * width
+			end := start + width
+			if end > len(uids.Uids) {
+				end = len(uids.Uids)
+			}
+			idx := i
+			eg.Go(func() error {
+				return filter(idx, start, end)
+			})
+		}
+		if err := eg.Wait(); err != nil {
+			return err
+		}
+		for _, out := range filtered {
+			final.Uids = append(final.Uids, out.Uids...)
+		}
 	}
 	span.AddEvent("Geo filtering result", trace.WithAttributes(
 		attribute.Int("uid_count", len(final.Uids))))
@@ -1532,32 +1501,47 @@ func (qs *queryState) filterStringFunction(arg funcArgs) error {
 	var values [][]types.Val
 	filteredUids := make([]uint64, 0, len(uids.Uids))
 	lang := langForFunc(arg.q.Langs)
+	isList := schema.State().IsList(attr)
 
-	// This iteration must be done in a serial order, because we're also storing the values in a
-	// matrix, to check it later.
-	// TODO: This function can be optimized by having a query specific cache, which can be populated
-	// by the handleHasFunction for e.g. for a `has(name)` query.
-	for _, uid := range uids.Uids {
-		vals, err := qs.getValsForUID(attr, lang, uid, arg.q.ReadTs)
-		switch {
-		case err == ErrNoValue:
-			continue
-		case err != nil:
-			return err
+	if !isList && len(uids.Uids) > 1 {
+		vals, present, berr := qs.batchGetScalarVals(context.Background(), attr, uids.Uids, arg.q.ReadTs)
+		if berr != nil {
+			return berr
 		}
-
-		var strVals []types.Val
-		for _, v := range vals {
-			// convert data from binary to appropriate format
-			strVal, err := types.Convert(v, types.StringID)
+		for idx, uid := range uids.Uids {
+			if !present[idx] {
+				continue
+			}
+			strVal, err := types.Convert(vals[idx], types.StringID)
 			if err != nil {
 				continue
 			}
-			strVals = append(strVals, strVal)
-		}
-		if len(strVals) > 0 {
-			values = append(values, strVals)
+			values = append(values, []types.Val{strVal})
 			filteredUids = append(filteredUids, uid)
+		}
+	} else {
+		for _, uid := range uids.Uids {
+			vals, err := qs.getValsForUID(attr, lang, uid, arg.q.ReadTs)
+			switch {
+			case err == ErrNoValue:
+				continue
+			case err != nil:
+				return err
+			}
+
+			var strVals []types.Val
+			for _, v := range vals {
+				// convert data from binary to appropriate format
+				strVal, err := types.Convert(v, types.StringID)
+				if err != nil {
+					continue
+				}
+				strVals = append(strVals, strVal)
+			}
+			if len(strVals) > 0 {
+				values = append(values, strVals)
+				filteredUids = append(filteredUids, uid)
+			}
 		}
 	}
 
@@ -1603,6 +1587,115 @@ func (qs *queryState) filterStringFunction(arg funcArgs) error {
 		algo.IntersectWith(arg.out.UidMatrix[i], filtered, arg.out.UidMatrix[i])
 	}
 	return nil
+}
+
+// batchGetScalarVals fetches single-value scalar data for a slice of UIDs using
+// chunked parallel BatchGet instead of N+1 serial GetData RPCs.
+func (qs *queryState) batchGetScalarVals(ctx context.Context, attr string, uids []uint64, readTs uint64) ([]types.Val, []bool, error) {
+	n := len(uids)
+	vals := make([]types.Val, n)
+	present := make([]bool, n)
+	if n == 0 {
+		return vals, present, nil
+	}
+
+	ns, rawAttr := parseNamespaceSafe(attr)
+	attrID := flat.PredicateToAttrID(rawAttr)
+	const batchSize = 2000
+	numBatches := (n + batchSize - 1) / batchSize
+	batchResults := make([]map[string][]byte, numBatches)
+	batchKeys := make([][][]byte, numBatches)
+
+	for b := 0; b < numBatches; b++ {
+		start := b * batchSize
+		end := start + batchSize
+		if end > n {
+			end = n
+		}
+		keys := make([][]byte, end-start)
+		for idx, uid := range uids[start:end] {
+			shardID := flat.CalculateShardID(uid, 0)
+			keys[idx] = flat.EncodeDataKey(shardID, ns, attrID, uid)
+		}
+		batchKeys[b] = keys
+	}
+
+	canParallel := pstore != nil && !x.IsActiveWriteTs(readTs) && numBatches > 1
+	if canParallel {
+		const maxWorkers = 4
+		sem := make(chan struct{}, maxWorkers)
+		var wg sync.WaitGroup
+		var errMu sync.Mutex
+		var firstErr error
+		for b := 0; b < numBatches; b++ {
+			wg.Add(1)
+			go func(bi int) {
+				defer wg.Done()
+				select {
+				case sem <- struct{}{}:
+					defer func() { <-sem }()
+				case <-ctx.Done():
+					errMu.Lock()
+					if firstErr == nil {
+						firstErr = ctx.Err()
+					}
+					errMu.Unlock()
+					return
+				}
+				txn := pstore.NewTransactionAt(readTs, false)
+				defer txn.Discard()
+				res, berr := txn.BatchGet(batchKeys[bi])
+				if berr != nil {
+					errMu.Lock()
+					if firstErr == nil {
+						firstErr = berr
+					}
+					errMu.Unlock()
+					return
+				}
+				batchResults[bi] = res
+			}(b)
+		}
+		wg.Wait()
+		if firstErr != nil {
+			return nil, nil, firstErr
+		}
+	} else {
+		txn := pstore.NewTransactionAt(readTs, false)
+		defer txn.Discard()
+		for b := 0; b < numBatches; b++ {
+			if err := ctx.Err(); err != nil {
+				return nil, nil, err
+			}
+			res, berr := txn.BatchGet(batchKeys[b])
+			if berr != nil {
+				return nil, nil, berr
+			}
+			batchResults[b] = res
+		}
+	}
+
+	for b := 0; b < numBatches; b++ {
+		start := b * batchSize
+		end := start + batchSize
+		if end > n {
+			end = n
+		}
+		resMap := batchResults[b]
+		keys := batchKeys[b]
+		for idx := range uids[start:end] {
+			rawVal, ok := resMap[string(keys[idx])]
+			if !ok || len(rawVal) <= 1 {
+				continue
+			}
+			vals[start+idx] = types.Val{
+				Tid:   types.TypeID(rawVal[0]),
+				Value: rawVal[1:],
+			}
+			present[start+idx] = true
+		}
+	}
+	return vals, present, nil
 }
 
 func (qs *queryState) getValsForUID(attr, lang string, uid, ReadTs uint64) ([]types.Val, error) {
