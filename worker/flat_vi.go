@@ -32,6 +32,11 @@ func newFlatViTxn(txn x.KVTxn, startTs uint64) *flatViTxn {
 	}
 }
 
+// NewFlatViTxn creates an exported index.Txn backed by FlatStorage.
+func NewFlatViTxn(txn x.KVTxn, startTs uint64) index.Txn {
+	return newFlatViTxn(txn, startTs)
+}
+
 func (t *flatViTxn) StartTs() uint64 {
 	return t.startTs
 }
@@ -122,6 +127,11 @@ type flatViCache struct {
 
 func newFlatViCache(readTs uint64) *flatViCache {
 	return &flatViCache{readTs: readTs}
+}
+
+// NewFlatViCache creates an exported index.LocalCache backed by FlatStorage.
+func NewFlatViCache(readTs uint64) index.LocalCache {
+	return newFlatViCache(readTs)
 }
 
 func (c *flatViCache) Get(key []byte) ([]byte, error) {

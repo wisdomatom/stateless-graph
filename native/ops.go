@@ -30,8 +30,41 @@ func (s *Store) BatchScanOutEdges(ctx context.Context, ns uint32, rawAttr string
 		return result, nil
 	}
 
-	readTs := worker.State.GetTimestamp(true)
 	attrID := flat.PredicateToAttrID(rawAttr)
+	if shared := TxnFromContext(ctx); shared != nil {
+		for _, uid := range fromUIDs {
+			shardID := flat.CalculateShardID(uid, 0)
+			var it flat.EdgeIterator
+			var err error
+			if needFacets {
+				it, err = s.engine.ScanOutEdgesFrom(shared.kvTxn, shardID, ns, attrID, uid, 0)
+			} else {
+				it, err = s.engine.ScanOutEdgesKeyOnly(shared.kvTxn, shardID, ns, attrID, uid, 0)
+			}
+			if err != nil {
+				return nil, err
+			}
+			var edges []EdgeResult
+			for it.Next() {
+				entry := it.Entry()
+				er := EdgeResult{ToUID: entry.ToUID}
+				if needFacets && len(entry.Facets) > 0 {
+					var f pb.Facets
+					if uerr := proto.Unmarshal(entry.Facets, &f); uerr == nil {
+						er.Facets = f.Facets
+					}
+				}
+				edges = append(edges, er)
+			}
+			it.Close()
+			if len(edges) > 0 {
+				result[uid] = edges
+			}
+		}
+		return result, nil
+	}
+
+	readTs := worker.State.GetTimestamp(true)
 
 	var mu sync.Mutex
 	var wg sync.WaitGroup
@@ -168,6 +201,11 @@ func (t *Txn) UpdateNodeFields(ctx context.Context, bctx *BatchWriteContext, uid
 						}
 					}
 				}
+			}
+		}
+		if meta.isIndexed && meta.schemaType == types.VFloatID {
+			if err := t.insertVectorHNSW(ctx, meta.fullAttr, uid, valBytes); err != nil {
+				return err
 			}
 		}
 	}

@@ -9,6 +9,8 @@ import (
 
 	"github.com/dgryski/go-farm"
 	"github.com/pkg/errors"
+	"github.com/twpayne/go-geom"
+	"github.com/twpayne/go-geom/encoding/geojson"
 
 	"github.com/wisdomatom/stateless-graph/protos/pb"
 	"github.com/wisdomatom/stateless-graph/schema"
@@ -50,6 +52,36 @@ type Txn struct {
 	isWrite   bool
 	committed bool
 	discarded bool
+}
+
+type txnCtxKey struct{}
+
+// WithTxn attaches a shared *Txn to ctx so subsequent native reads and writes
+// participate in the same transaction (with full read-your-own-writes visibility).
+func WithTxn(ctx context.Context, txn *Txn) context.Context {
+	return context.WithValue(ctx, txnCtxKey{}, txn)
+}
+
+// TxnFromContext returns the active shared *Txn from ctx, or nil if none.
+func TxnFromContext(ctx context.Context) *Txn {
+	if ctx == nil {
+		return nil
+	}
+	if t, ok := ctx.Value(txnCtxKey{}).(*Txn); ok && t != nil && !t.committed && !t.discarded {
+		return t
+	}
+	return nil
+}
+
+// readKVTxn returns either the active shared transaction's KVTxn (with a no-op cleanup)
+// or a fresh read-only KVTxn (with Discard cleanup).
+func (s *Store) readKVTxn(ctx context.Context) (x.KVTxn, func()) {
+	if shared := TxnFromContext(ctx); shared != nil {
+		return shared.kvTxn, func() {}
+	}
+	readTs := worker.State.GetTimestamp(true)
+	rTxn := s.db.NewTransactionAt(readTs, false)
+	return rTxn, func() { rTxn.Discard() }
 }
 
 // Begin starts a new native read or read-write transaction.
@@ -370,6 +402,11 @@ func (t *Txn) SetNodeFields(ctx context.Context, bctx *BatchWriteContext, uid ui
 				}
 			}
 		}
+		if meta.isIndexed && meta.schemaType == types.VFloatID {
+			if err := t.insertVectorHNSW(ctx, meta.fullAttr, uid, valBytes); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
@@ -431,6 +468,58 @@ func toTypedVal(v any, targetType types.TypeID) (types.Val, error) {
 				return types.Val{}, err
 			}
 			return types.Val{Tid: types.DateTimeID, Value: parsed}, nil
+		}
+	case types.PasswordID:
+		if s, ok := v.(string); ok {
+			enc, err := types.Encrypt(s)
+			if err != nil {
+				return types.Val{}, err
+			}
+			return types.Val{Tid: types.PasswordID, Value: enc}, nil
+		}
+	case types.GeoID:
+		if g, ok := v.(geom.T); ok {
+			return types.Val{Tid: types.GeoID, Value: g}, nil
+		}
+		if s, ok := v.(string); ok {
+			var g geom.T
+			if err := geojson.Unmarshal([]byte(s), &g); err != nil {
+				return types.Val{}, err
+			}
+			return types.Val{Tid: types.GeoID, Value: g}, nil
+		}
+		if b, ok := v.([]byte); ok {
+			var g geom.T
+			if err := geojson.Unmarshal(b, &g); err != nil {
+				return types.Val{}, err
+			}
+			return types.Val{Tid: types.GeoID, Value: g}, nil
+		}
+	case types.VFloatID:
+		switch fv := v.(type) {
+		case []float32:
+			return types.Val{Tid: types.VFloatID, Value: fv}, nil
+		case []float64:
+			out := make([]float32, len(fv))
+			for i, x := range fv {
+				out[i] = float32(x)
+			}
+			return types.Val{Tid: types.VFloatID, Value: out}, nil
+		case []any:
+			out := make([]float32, len(fv))
+			for i, x := range fv {
+				switch n := x.(type) {
+				case float64:
+					out[i] = float32(n)
+				case float32:
+					out[i] = n
+				case int:
+					out[i] = float32(n)
+				case int64:
+					out[i] = float32(n)
+				}
+			}
+			return types.Val{Tid: types.VFloatID, Value: out}, nil
 		}
 	}
 	// Fallback through standard types.Convert from string/binary.

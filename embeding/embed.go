@@ -6,60 +6,30 @@
 package embeding
 
 import (
-	"context"
 	"math"
-	"net"
 	"os"
 	"path"
-	"reflect"
 	"runtime"
-	"sync"
-	"time"
-	"unsafe"
-
-	"github.com/google/uuid"
 
 	"github.com/dgraph-io/badger/v4"
-	"github.com/dgraph-io/dgo/v250"
-	"github.com/dgraph-io/dgo/v250/protos/api"
-	"github.com/wisdomatom/stateless-graph/conn"
-	"github.com/wisdomatom/stateless-graph/edgraph"
+	"github.com/dgraph-io/ristretto/v2/z"
 	"github.com/wisdomatom/stateless-graph/schema"
 	"github.com/wisdomatom/stateless-graph/worker"
 	"github.com/wisdomatom/stateless-graph/x"
-	"github.com/dgraph-io/ristretto/v2/z"
-	"github.com/sirupsen/logrus"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/health"
-	hapi "google.golang.org/grpc/health/grpc_health_v1"
-	"google.golang.org/grpc/peer"
-	"google.golang.org/grpc/status"
-	"google.golang.org/grpc/test/bufconn"
-)
-
-const (
-	embedBufNetZero  = "buf-net-zero"
-	embedBufNetAlpha = "buf-net-alpha"
 )
 
 type EmbedDgraph struct {
-	listenerZero  *bufconn.Listener
-	listenerAlpha *bufconn.Listener
-	lock          *sync.Mutex
-	client        map[string]*dgo.Dgraph
-	closer        *z.Closer
+	closer *z.Closer
 }
 
 type DgraphServer struct {
-	Url          string   `toml:"url" mapstructure:"url"`
-	Host         string   `toml:"host" mapstructure:"host"`
-	Grpc         string   `toml:"grpc" mapstructure:"grpc"`
-	AuthToken    string   `toml:"auth_token" mapstructure:"auth_token"`
-	User         string   `toml:"user" mapstructure:"user"`
-	Password     string   `toml:"password" mapstructure:"password"`
-	Embed        bool     `toml:"embed" mapstructure:"embed"`
+	Url            string   `toml:"url" mapstructure:"url"`
+	Host           string   `toml:"host" mapstructure:"host"`
+	Grpc           string   `toml:"grpc" mapstructure:"grpc"`
+	AuthToken      string   `toml:"auth_token" mapstructure:"auth_token"`
+	User           string   `toml:"user" mapstructure:"user"`
+	Password       string   `toml:"password" mapstructure:"password"`
+	Embed          bool     `toml:"embed" mapstructure:"embed"`
 	EmbedDataDir   string   `toml:"embed_data_dir" mapstructure:"embed_data_dir"`
 	TiKVAddrs      []string `toml:"tikv_addrs" mapstructure:"tikv_addrs"`
 	UseFlatStorage bool     `toml:"use_flat_storage" mapstructure:"use_flat_storage"`
@@ -69,101 +39,20 @@ var (
 	badgerTuning = "compression=snappy; numgoroutines=32;"
 )
 
+// NewDgraphEmbed initializes the embedded native Flat Storage + TiKV/Badger engine
+// with zero gRPC, zero bufconn, and zero DQL server overhead.
 func NewDgraphEmbed(conf DgraphServer) (*EmbedDgraph, error) {
-	// Only create local data directory if using embedded BadgerDB (no TiKV configured)
 	if len(conf.TiKVAddrs) == 0 && conf.EmbedDataDir != "" {
 		if err := os.MkdirAll(conf.EmbedDataDir, 0750); err != nil {
 			return nil, err
 		}
 	}
 
-	// For embedded server, disable hard sync to fully utilize NVMe speed for benchmarks.
 	x.WorkerConfig.HardSync = false
 	x.WorkerConfig.TiKVAddrs = conf.TiKVAddrs
 	x.WorkerConfig.Embedded = true
-	// Flat storage is mandatory since the legacy posting package was removed.
 	x.WorkerConfig.UseFlatStorage = true
 
-	ed := &EmbedDgraph{
-		lock:   &sync.Mutex{},
-		client: map[string]*dgo.Dgraph{},
-	}
-	listenerZero := bufconn.Listen(1024 * 1024 * 4)
-	listenerAlpha := bufconn.Listen(1024 * 1024 * 8)
-
-	ed.listenerZero = listenerZero
-	ed.listenerAlpha = listenerAlpha
-
-	pls := conn.GetPools()
-	v := reflect.ValueOf(pls).Elem().FieldByName("all")
-	ptr := unsafe.Pointer(v.UnsafeAddr()) //nolint:gosec // audit
-	mapV := reflect.NewAt(v.Type(), ptr).Elem()
-
-	npZ, err := embedConnPool(embedBufNetZero, listenerZero)
-	if err != nil {
-		return ed, err
-	}
-	mapV.SetMapIndex(reflect.ValueOf(embedBufNetZero), reflect.ValueOf(npZ))
-
-	npA, err := embedConnPool(embedBufNetAlpha, listenerAlpha)
-	if err != nil {
-		return ed, err
-	}
-	mapV.SetMapIndex(reflect.ValueOf(embedBufNetAlpha), reflect.ValueOf(npA))
-
-	// ed.dZero(conf, listenerZero)
-
-	ed.dAlpha(conf, listenerAlpha)
-
-	return ed, nil
-}
-
-func embedConnPool(addr string, listener *bufconn.Listener) (*conn.Pool, error) {
-	np := &conn.Pool{
-		Addr: addr,
-	}
-
-	cnn, err := embedGrpcConn(listener, addr)
-	if err != nil {
-		return nil, err
-	}
-
-	v := reflect.ValueOf(np).Elem() // Get Pool struct value
-
-	fn := func() {
-		f := v.FieldByName("lastEcho")
-		// 1. Get field address
-		ptr := unsafe.Pointer(f.UnsafeAddr()) //nolint:gosec // audit
-		// 2. Construct a 'writable reflect.Value'
-		rw := reflect.NewAt(f.Type(), ptr).Elem()
-		// 3. Set value
-		rw.Set(reflect.ValueOf(time.Now()))
-	}
-
-	go func() {
-		ticker := time.NewTicker(time.Second)
-		for {
-			fn()
-			<-ticker.C
-		}
-	}()
-
-	// Modify conn
-	fConn := v.FieldByName("conn")
-	if fConn.IsValid() {
-		// Key: use unsafe.Pointer + NewAt to create a 'writable' Value
-		ptrConn := unsafe.Pointer(fConn.UnsafeAddr()) //nolint:gosec // audit
-		writableConn := reflect.NewAt(fConn.Type(), ptrConn).Elem()
-
-		// Perform assignment
-		writableConn.Set(reflect.ValueOf(cnn))
-	}
-
-	return np, nil
-}
-
-func (r *EmbedDgraph) dAlpha(conf DgraphServer, lis *bufconn.Listener) {
-	// setup data directories
 	if len(conf.TiKVAddrs) == 0 {
 		worker.Config.PostingDir = conf.EmbedDataDir
 	}
@@ -172,12 +61,10 @@ func (r *EmbedDgraph) dAlpha(conf DgraphServer, lis *bufconn.Listener) {
 	if x.WorkerConfig.TmpDir == "" {
 		x.WorkerConfig.TmpDir = path.Join(os.TempDir(), "stateless-graph-tmp")
 	}
-	x.WorkerConfig.ZeroAddr = []string{embedBufNetZero}
 
-	// TODO: optimize these and more options
 	x.WorkerConfig.Badger = badger.DefaultOptions("").FromSuperFlag(badgerTuning).
-		WithSyncWrites(false). // Huge throughput boost for benchmarks on NVMe
-		WithInMemory(false).   // Ensure data goes to NVMe but without Fsync bottleneck
+		WithSyncWrites(false).
+		WithInMemory(false).
 		WithLoggingLevel(badger.ERROR)
 
 	if runtime.GOOS == "windows" {
@@ -186,164 +73,24 @@ func (r *EmbedDgraph) dAlpha(conf DgraphServer, lis *bufconn.Listener) {
 	x.Config.MaxRetries = 10
 	x.Config.Limit = z.NewSuperFlag("max-pending-queries=1000000")
 	x.Config.LimitNormalizeNode = 1
+	x.Config.LimitMutationsNquad = 2000000
+	x.Config.LimitQueryEdge = 10000000
 
-	// initialize each package
-	edgraph.Init()
-	// worker.State.InitStorage()
 	worker.InitServerState()
 	worker.InitForLite(worker.State.Pstore)
 	worker.SetMaxUID(math.MaxUint64)
 	worker.InitTasks()
 	worker.Init(worker.State.Pstore)
-
 	schema.Init(worker.State.Pstore)
-
-	x.Config.LimitMutationsNquad = 2000000
-	x.Config.LimitQueryEdge = 10000000
-
-	server := grpc.NewServer(
-		grpc.UnaryInterceptor(PeerRewriteInterceptor),
-	)
-
-	// Register our server wrapper that properly handles context and routing
-	api.RegisterDgraphServer(server, &edgraph.Server{})
-	hapi.RegisterHealthServer(server, health.NewServer())
-
-	// Start the server in a goroutine
-	go func() {
-		if err := server.Serve(lis); err != nil {
-			logrus.Errorf("dgraph server exited with error: %v", err)
-		}
-	}()
-
 	worker.StartRaftNodes(false)
-	// Store the engine as the active instance
 	x.UpdateHealthStatus(true)
-}
 
-func (r *EmbedDgraph) GetClient() (*dgo.Dgraph, error) {
-	r.lock.Lock()
-	defer r.lock.Unlock()
-	for _, cli := range r.client {
-		return cli, nil
-	}
-	ipc := &inProcessClient{server: &edgraph.Server{}}
-	cli := dgo.NewDgraphClient(ipc)
-	r.client[uuid.NewString()] = cli
-	return cli, nil
-}
-
-type inProcessClient struct {
-	server *edgraph.Server
-}
-
-var _ api.DgraphClient = (*inProcessClient)(nil)
-
-func localContext(ctx context.Context) context.Context {
-	if _, ok := peer.FromContext(ctx); !ok {
-		return peer.NewContext(ctx, &peer.Peer{
-			Addr: &net.TCPAddr{IP: net.ParseIP("127.0.0.1")},
-		})
-	}
-	return ctx
-}
-
-func (c *inProcessClient) Login(ctx context.Context, in *api.LoginRequest, opts ...grpc.CallOption) (*api.Response, error) {
-	return c.server.Login(localContext(ctx), in)
-}
-
-func (c *inProcessClient) Query(ctx context.Context, in *api.Request, opts ...grpc.CallOption) (*api.Response, error) {
-	return c.server.QueryNoGrpc(localContext(ctx), in)
-}
-
-func (c *inProcessClient) Alter(ctx context.Context, in *api.Operation, opts ...grpc.CallOption) (*api.Payload, error) {
-	return c.server.Alter(localContext(ctx), in)
-}
-
-func (c *inProcessClient) CommitOrAbort(ctx context.Context, in *api.TxnContext, opts ...grpc.CallOption) (*api.TxnContext, error) {
-	return c.server.CommitOrAbort(localContext(ctx), in)
-}
-
-func (c *inProcessClient) CheckVersion(ctx context.Context, in *api.Check, opts ...grpc.CallOption) (*api.Version, error) {
-	return c.server.CheckVersion(localContext(ctx), in)
-}
-
-func (c *inProcessClient) RunDQL(ctx context.Context, in *api.RunDQLRequest, opts ...grpc.CallOption) (*api.Response, error) {
-	return c.server.RunDQL(localContext(ctx), in)
-}
-
-func (c *inProcessClient) AllocateIDs(ctx context.Context, in *api.AllocateIDsRequest, opts ...grpc.CallOption) (*api.AllocateIDsResponse, error) {
-	return c.server.AllocateIDs(localContext(ctx), in)
-}
-
-func (c *inProcessClient) UpdateExtSnapshotStreamingState(ctx context.Context, in *api.UpdateExtSnapshotStreamingStateRequest, opts ...grpc.CallOption) (*api.UpdateExtSnapshotStreamingStateResponse, error) {
-	return c.server.UpdateExtSnapshotStreamingState(localContext(ctx), in)
-}
-
-func (c *inProcessClient) StreamExtSnapshot(ctx context.Context, opts ...grpc.CallOption) (api.Dgraph_StreamExtSnapshotClient, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method StreamExtSnapshot not implemented")
-}
-
-func (c *inProcessClient) CreateNamespace(ctx context.Context, in *api.CreateNamespaceRequest, opts ...grpc.CallOption) (*api.CreateNamespaceResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method CreateNamespace not implemented")
-}
-
-func (c *inProcessClient) DropNamespace(ctx context.Context, in *api.DropNamespaceRequest, opts ...grpc.CallOption) (*api.DropNamespaceResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method DropNamespace not implemented")
-}
-
-func (c *inProcessClient) ListNamespaces(ctx context.Context, in *api.ListNamespacesRequest, opts ...grpc.CallOption) (*api.ListNamespacesResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method ListNamespaces not implemented")
-}
-
-func embedGrpcConn(listener *bufconn.Listener, addr string) (*grpc.ClientConn, error) {
-	cnn, err := grpc.DialContext(context.Background(), addr,
-		grpc.WithContextDialer(bufDialer(listener)),
-		grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		return nil, err
-	}
-	return cnn, nil
-}
-
-func bufDialer(listener *bufconn.Listener) func(context.Context, string) (net.Conn, error) {
-	return func(ctx context.Context, url string) (net.Conn, error) {
-		return listener.Dial()
-	}
-}
-
-func PeerRewriteInterceptor(
-	ctx context.Context,
-	req any,
-	info *grpc.UnaryServerInfo,
-	handler grpc.UnaryHandler,
-) (any, error) {
-	// oldPeer, _ := peer.FromContext(ctx)
-	ip := net.ParseIP("127.0.0.1")
-	newPeer := &peer.Peer{
-		Addr: &net.TCPAddr{
-			IP: ip,
-			//Port: 7080,
-		},
-	}
-
-	ctx = peer.NewContext(ctx, newPeer)
-
-	return handler(ctx, req)
+	return &EmbedDgraph{}, nil
 }
 
 func (r *EmbedDgraph) Close() {
-	for _, cli := range r.client {
-		cli.Close()
-	}
 	if r.closer != nil {
 		r.closer.Signal()
-	}
-	if r.listenerAlpha != nil {
-		_ = r.listenerAlpha.Close()
-	}
-	if r.listenerZero != nil {
-		_ = r.listenerZero.Close()
 	}
 }
 

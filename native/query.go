@@ -21,9 +21,8 @@ import (
 
 // ScanTypeUIDs scans UIDs belonging to `typeName` via dgraph.type exact index (KeyOnly).
 func (s *Store) ScanTypeUIDs(ctx context.Context, ns uint32, typeName string, afterUID uint64, limit int) ([]uint64, error) {
-	readTs := worker.State.GetTimestamp(true)
-	rTxn := s.db.NewTransactionAt(readTs, false)
-	defer rTxn.Discard()
+	rTxn, cleanup := s.readKVTxn(ctx)
+	defer cleanup()
 
 	tk, _ := tok.GetTokenizer("exact")
 	tokens, err := tok.BuildTokens(typeName, tk)
@@ -36,9 +35,8 @@ func (s *Store) ScanTypeUIDs(ctx context.Context, ns uint32, typeName string, af
 
 // CountTypeUIDs counts all UIDs of `typeName` using a single KeyOnly index scan without allocating a full slice.
 func (s *Store) CountTypeUIDs(ctx context.Context, ns uint32, typeName string) (int, error) {
-	readTs := worker.State.GetTimestamp(true)
-	rTxn := s.db.NewTransactionAt(readTs, false)
-	defer rTxn.Discard()
+	rTxn, cleanup := s.readKVTxn(ctx)
+	defer cleanup()
 
 	tk, _ := tok.GetTokenizer("exact")
 	tokens, err := tok.BuildTokens(typeName, tk)
@@ -106,9 +104,8 @@ func (s *Store) LookupIndexEq(ctx context.Context, ns uint32, rawAttr string, va
 		return nil, err
 	}
 
-	readTs := worker.State.GetTimestamp(true)
-	rTxn := s.db.NewTransactionAt(readTs, false)
-	defer rTxn.Discard()
+	rTxn, cleanup := s.readKVTxn(ctx)
+	defer cleanup()
 
 	attrID := flat.PredicateToAttrID(rawAttr)
 	scanLimit := limit
@@ -121,7 +118,7 @@ func (s *Store) LookupIndexEq(ctx context.Context, ns uint32, rawAttr string, va
 	}
 
 	// Lossy tokenizer (e.g. hash): verify via BatchGet.
-	vals, present, err := s.batchGetSingleAttr(ctx, ns, attrID, uids, readTs)
+	vals, present, err := s.batchGetSingleAttr(ctx, ns, attrID, uids, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -287,9 +284,8 @@ func (s *Store) LookupIndexRange(ctx context.Context, ns uint32, rawAttr string,
 		tok2 = []byte(toks2[0])
 	}
 
-	readTs := worker.State.GetTimestamp(true)
-	rTxn := s.db.NewTransactionAt(readTs, false)
-	defer rTxn.Discard()
+	rTxn, cleanup := s.readKVTxn(ctx)
+	defer cleanup()
 
 	attrID := flat.PredicateToAttrID(rawAttr)
 	basePrefix := flat.AttrIndexPrefix(0, ns, attrID)
@@ -403,7 +399,7 @@ doneScan:
 
 	// Verify ONLY boundary-bucket UIDs via BatchGet!
 	if len(boundaryUIDs) > 0 {
-		vals, present, err := s.batchGetSingleAttr(ctx, ns, attrID, boundaryUIDs, readTs)
+		vals, present, err := s.batchGetSingleAttr(ctx, ns, attrID, boundaryUIDs, 0)
 		if err != nil {
 			return nil, err
 		}
@@ -462,9 +458,8 @@ func (s *Store) ScanExtremum(ctx context.Context, ns uint32, rawAttr string, isM
 		return nil, false, errors.Errorf("native: no sortable tokenizer for extremum on %s", rawAttr)
 	}
 
-	readTs := worker.State.GetTimestamp(true)
-	rTxn := s.db.NewTransactionAt(readTs, false)
-	defer rTxn.Discard()
+	rTxn, cleanup := s.readKVTxn(ctx)
+	defer cleanup()
 
 	attrID := flat.PredicateToAttrID(rawAttr)
 	_, uid, found, err := s.engine.ScanIndexExtremum(rTxn, 0, ns, attrID, sortTok.Identifier(), isMax)
@@ -522,9 +517,8 @@ func (s *Store) BatchGetNodesFields(ctx context.Context, ns uint32, uids []uint6
 		}
 	}
 
-	readTs := worker.State.GetTimestamp(true)
-	rTxn := s.db.NewTransactionAt(readTs, false)
-	defer rTxn.Discard()
+	rTxn, cleanup := s.readKVTxn(ctx)
+	defer cleanup()
 
 	// Chunk into batches of 2000 keys if very large.
 	const batchSize = 2000
@@ -544,14 +538,9 @@ func (s *Store) BatchGetNodesFields(ctx context.Context, ns uint32, uids []uint6
 			}
 			nodeIdx := kIdx / numAttrs
 			attrIdx := kIdx % numAttrs
-			dst, err := types.Convert(types.Val{
-				Tid:   types.TypeID(rawVal[0]),
-				Value: rawVal[1:],
-			}, attrTypes[attrIdx])
-			if err != nil {
-				continue
+			if decoded, ok := decodeStoredVal(rawVal, attrTypes[attrIdx]); ok {
+				rows[nodeIdx][rawAttrs[attrIdx]] = decoded
 			}
-			rows[nodeIdx][rawAttrs[attrIdx]] = dst.Value
 		}
 	}
 	return rows, nil
@@ -565,8 +554,15 @@ func (s *Store) batchGetSingleAttr(ctx context.Context, ns uint32, attrID uint32
 		return vals, present, nil
 	}
 	const batchSize = 2000
-	rTxn := s.db.NewTransactionAt(readTs, false)
-	defer rTxn.Discard()
+	var rTxn x.KVTxn
+	var cleanup func()
+	if readTs == 0 {
+		rTxn, cleanup = s.readKVTxn(ctx)
+	} else {
+		rTxn = s.db.NewTransactionAt(readTs, false)
+		cleanup = func() { rTxn.Discard() }
+	}
+	defer cleanup()
 
 	for start := 0; start < n; start += batchSize {
 		end := start + batchSize
