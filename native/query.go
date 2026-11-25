@@ -180,6 +180,64 @@ func (s *Store) LookupIndexIn(ctx context.Context, ns uint32, rawAttr string, va
 	return merged.Uids, nil
 }
 
+// LookupIndexTokens executes fulltext/term token queries (alloftext, anyoftext, allofterms, anyofterms)
+// directly against the Flat Storage index using KeyOnly concurrent scans.
+func (s *Store) LookupIndexTokens(ctx context.Context, ns uint32, rawAttr string, tokName string, text string, matchAll bool) ([]uint64, error) {
+	tk, has := tok.GetTokenizer(tokName)
+	if !has {
+		return nil, errors.Errorf("native: tokenizer %s not found", tokName)
+	}
+	tokens, err := tok.BuildTokens(text, tk)
+	if err != nil || len(tokens) == 0 {
+		return nil, err
+	}
+
+	readTs := worker.State.GetTimestamp(true)
+	attrID := flat.PredicateToAttrID(rawAttr)
+	lists := make([]*pb.List, len(tokens))
+
+	var wg sync.WaitGroup
+	var errMu sync.Mutex
+	var firstErr error
+	sem := make(chan struct{}, 8)
+	for i, token := range tokens {
+		wg.Add(1)
+		go func(idx int, t string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			rTxn := s.db.NewTransactionAt(readTs, false)
+			defer rTxn.Discard()
+			uids, serr := s.engine.ScanIndexWithContext(ctx, rTxn, 0, ns, attrID, []byte(t), 0, 0)
+			if serr != nil {
+				errMu.Lock()
+				if firstErr == nil {
+					firstErr = serr
+				}
+				errMu.Unlock()
+				return
+			}
+			lists[idx] = &pb.List{Uids: uids}
+		}(i, token)
+	}
+	wg.Wait()
+	if firstErr != nil {
+		return nil, firstErr
+	}
+
+	if matchAll {
+		res := lists[0]
+		for i := 1; i < len(lists); i++ {
+			algo.IntersectWith(res, lists[i], res)
+			if len(res.Uids) == 0 {
+				return nil, nil
+			}
+		}
+		return res.Uids, nil
+	}
+	return algo.MergeSorted(lists).Uids, nil
+}
+
 // LookupIndexRange executes range queries (gt, ge, lt, le, between) on any sortable index
 // with **Boundary-Only Verification Pruning**:
 // For lossy sortable indexes (like datetime `hour`/`day`/`month`/`year`), interior buckets
@@ -268,10 +326,11 @@ func (s *Store) LookupIndexRange(ctx context.Context, ns uint32, rawAttr string,
 			return nil, ctx.Err()
 		}
 		key := it.Item().Key()
-		if !bytes.HasPrefix(key, tokPrefix) || len(key) < len(basePrefix)+8 {
+		if !bytes.HasPrefix(key, tokPrefix) || len(key) < len(basePrefix)+9 {
 			break
 		}
-		tokenBytes := key[len(basePrefix) : len(key)-8]
+		// EncodeIndexKey layout: AttrIndexPrefix || Token || 0x00 || UID(8B)
+		tokenBytes := key[len(basePrefix) : len(key)-9]
 		uid := binary.BigEndian.Uint64(key[len(key)-8:])
 
 		switch op {
